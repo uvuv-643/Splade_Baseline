@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Очередь</h1>
+
+{% if running %}
+<h2>Бегут</h2>
+<table>
+<tr><th>run</th><th></th></tr>
+{% for r in running %}
+<tr>
+  <td><a href="/runs/{{ r.id }}">{{ r.id }}</a></td>
+  <td>
+    <form class="inline" method="post" action="/runs/{{ r.id }}/kill"
+          onsubmit="return confirm('Остановить {{ r.id }}?')">
+      <button type="submit">kill</button>
+    </form>
+  </td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
+
+<h2>В очереди ({{ jobs|length }})</h2>
+<table>
+<tr><th>#</th><th>run_id</th><th>снапшот</th><th></th></tr>
+{% for j in jobs %}
+<tr>
+  <td>{{ loop.index }}</td>
+  <td>{{ j.run_id }}</td>
+  <td><span class="badge">{{ j.snapshot }}</span></td>
+  <td>
+    <form class="inline" method="post" action="/queue/{{ j.run_id }}/up"><button>↑</button></form>
+    <form class="inline" method="post" action="/queue/{{ j.run_id }}/down"><button>↓</button></form>
+    <form class="inline" method="post" action="/queue/{{ j.run_id }}/delete"
+          onsubmit="return confirm('Удалить {{ j.run_id }} из очереди?')">
+      <button>удалить</button>
+    </form>
+  </td>
+</tr>
+{% endfor %}
+</table>
+
+{% if gating %}
+<h2>Gate в фоне</h2>
+<ul>{% for name, st in gating.items() %}<li><b>{{ name }}</b>: {{ st }}</li>{% endfor %}</ul>
+{% endif %}
+
+{% if failed %}
+<h2>Провалившие gate</h2>
+{% for f in failed %}
+<details><summary>{{ f.name }}</summary><pre>{{ f.log }}</pre></details>
+{% endfor %}
+{% endif %}
+
+<h2>Поставить новый</h2>
+<form method="post" action="/queue/new">
+  <p>конфиг из файла:
+    <select name="config_file">
+      <option value=""></option>
+      {% for c in configs %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+    </select>
+  </p>
+  <p>или yaml (перекрывает выбор файла; поддерживает extends):</p>
+  <textarea name="config_yaml" rows="10" cols="90" placeholder="extends: base.yaml&#10;name: my-exp&#10;..."></textarea>
+  <p>снапшот (пусто = авто-снапшот текущего exp/):
+    <select name="snapshot">
+      <option value=""></option>
+      {% for s in snapshots %}<option value="{{ s.hash }}">{{ s.hash }} {{ s.name }}</option>{% endfor %}
+    </select>
+  </p>
+  <p><label><input type="checkbox" name="do_gate" value="true" checked> gate перед постановкой (в фоне, ~2 мин)</label></p>
+  <button type="submit">в очередь</button>
+</form>
+{% endblock %}

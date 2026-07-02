@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ info.id }} <span class="status-{{ info.status }}">{{ info.status }}</span></h1>
+<p>снапшот <span class="badge">{{ info.snapshot }} ({{ info.snapshot_hash }})</span>,
+   core <span class="badge">{{ info.core_hash }}</span>,
+   seed {{ info.seed }}
+   {% if info.duration_s %}, {{ "%.0f"|format(info.duration_s / 60) }} мин{% endif %}</p>
+
+{% if info.status == "running" %}
+<form class="inline" method="post" action="/runs/{{ info.id }}/kill"
+      onsubmit="return confirm('Остановить {{ info.id }}?')">
+  <button type="submit">kill</button>
+</form>
+{% endif %}
+
+{% if loss_svg %}
+<h2>Loss</h2>
+{{ loss_svg | safe }}
+{% endif %}
+
+{% if metrics.datasets %}
+<h2>Метрики</h2>
+<table>
+<tr><th>датасет</th><th>метрики</th><th>запросов</th><th>nnz(q)</th><th>eval hash</th></tr>
+{% for ds, agg in metrics.datasets.items() %}
+<tr>
+  <td>{{ ds }}</td>
+  <td>{% for k, v in agg.items() if "@" in k %}{{ k }}={{ "%.4f"|format(v) }} {% endfor %}</td>
+  <td>{{ agg.n_queries }}</td>
+  <td>{{ "%.1f"|format(agg.avg_nnz_query) }}</td>
+  <td><span class="badge">{{ agg.eval_data_hash }}</span></td>
+</tr>
+{% endfor %}
+</table>
+{% for c, info_c in metrics.corpora.items() %}
+<p>корпус {{ c }}: {{ info_c.n_docs }} доков, nnz(d)={{ "%.1f"|format(info_c.avg_nnz_doc) }},
+энкод {{ info_c.encode_s }}s</p>
+{% endfor %}
+{% endif %}
+
+<h2>Конфиг</h2>
+<pre>{{ config }}</pre>
+
+<h2>Дифф с другим запуском</h2>
+<form method="get" action="/diff">
+  <input type="hidden" name="a" value="{{ info.id }}">
+  <select name="b">
+    {% for o in others %}<option value="{{ o }}">{{ o }}</option>{% endfor %}
+  </select>
+  <button type="submit">дифф</button>
+</form>
+
+<h2>stdout (хвост)</h2>
+<div hx-get="/runs/{{ info.id }}/stdout" hx-trigger="every 5s" hx-swap="innerHTML">
+<pre>{{ stdout }}</pre>
+</div>
+{% endblock %}

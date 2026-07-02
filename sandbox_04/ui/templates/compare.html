@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Сравнение</h1>
+<form method="get" action="/compare">
+  <table>
+  <tr><th></th><th>run</th><th>имя</th></tr>
+  {% for r in done %}
+  <tr>
+    <td><input type="checkbox" name="run" value="{{ r.id }}"
+               {% if r.id in selected %}checked{% endif %}></td>
+    <td><a href="/runs/{{ r.id }}">{{ r.id }}</a></td>
+    <td>{{ r.name }}</td>
+  </tr>
+  {% endfor %}
+  </table>
+  <button type="submit">сравнить (≥2)</button>
+</form>
+
+{% if error %}<div class="warn">{{ error }}</div>{% endif %}
+
+{% if report %}
+{% for w in report.warnings %}<div class="warn">⚠️ {{ w }}</div>{% endfor %}
+
+{% for ds, ds_rep in report.datasets.items() %}
+<h2>{{ ds }}</h2>
+<table>
+<tr><th>система</th>
+{% for m in ds_rep.aggregates.values()|first %}<th {% if m in primary[ds] %}class="primary-metric"{% endif %}>{{ m }}</th>{% endfor %}
+</tr>
+{% for name, agg in ds_rep.aggregates.items() %}
+<tr><td>{{ name }}</td>
+{% for m, v in agg.items() %}<td {% if m in primary[ds] %}class="primary-metric"{% endif %}>{{ "%.4f"|format(v.mean) }} ± {{ "%.4f"|format(v.std) }}</td>{% endfor %}
+</tr>
+{% endfor %}
+</table>
+
+{% if ds_rep.pairwise %}
+<table>
+<tr><th>пара (B−A)</th><th>метрика</th><th>Δ</th><th>95% CI (BCa)</th><th>p Fisher</th><th>p t</th><th>p Holm</th><th>значимо</th></tr>
+{% for pw in ds_rep.pairwise %}
+<tr>
+  <td>{{ pw.b }} − {{ pw.a }}</td>
+  <td>{{ pw.metric }}</td>
+  <td>{{ "%+.4f"|format(pw.delta) }}</td>
+  <td>[{{ "%+.4f"|format(pw.ci95_low) }}, {{ "%+.4f"|format(pw.ci95_high) }}]</td>
+  <td>{{ "%.4f"|format(pw.p_fisher) }}</td>
+  <td>{{ "%.4f"|format(pw.p_ttest) }}</td>
+  <td>{{ "%.4f"|format(pw.p_holm) }}</td>
+  <td>{% if pw.significant %}<b>да</b>{% else %}нет{% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
+{% endfor %}
+
+{% if report.scaling %}
+<h2>Скейлинг по {{ report.scaling.param }}</h2>
+{% for ds, per_metric in report.scaling.datasets.items() %}
+{% for metric, info in per_metric.items() %}
+<h3>{{ ds }} / {{ metric }}</h3>
+{% if info.fit %}
+<p>m(N) = a − b·N^(−γ): a={{ "%.4f"|format(info.fit.a) }},
+γ={{ "%.3f"|format(info.fit.gamma) }}, R²={{ "%.3f"|format(info.fit.r2) }}</p>
+{% endif %}
+<p>Кендалл: τ={{ "%.3f"|format(info.trend.tau) }}, p={{ "%.4f"|format(info.trend.p) }}</p>
+<p>точки: {% for x, y in info.points %}({{ x|int }}, {{ "%.4f"|format(y) }}) {% endfor %}</p>
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% endblock %}

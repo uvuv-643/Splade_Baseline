@@ -1,0 +1,33 @@
+name: base
+description: "базовый SPLADE-max на MS MARCO triples"
+
+model:
+  hf_model: distilbert-base-uncased
+  query_encoder: mlm
+  max_len_query: 32
+  max_len_doc: 256
+  encode_batch_docs: 128
+  encode_batch_queries: 256
+
+data:
+  train_pool: data/train/triples-2m.tsv
+  train_triples: 480000
+  sample_seed: auto
+
+train:
+  seeds: [1]
+  lr: 2.0e-5
+  batch_size: 32
+  max_steps: 15000
+  warmup_steps: 1000
+  flops_warmup_steps: 10000
+  lambda_q: 3.0e-4
+  lambda_d: 1.0e-4
+  log_every: 50
+
+eval:
+  datasets: [msmarco-dev-lite, trec-dl-2019-lite, trec-dl-2020-lite]
+  topk: 1000
+  max_queries: null
+  batch_size_search: 64
+  save_index: false

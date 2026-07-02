@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Снапшоты</h1>
+<table>
+<tr><th></th><th></th><th>хэш</th><th>имя</th><th>создан</th><th>gate</th><th>описание</th></tr>
+{% for s in snapshots %}
+<tr>
+  <td><input type="radio" name="pick_a" value="{{ s.hash }}"
+             onclick="document.getElementById('diff_a').value=this.value"></td>
+  <td><input type="radio" name="pick_b" value="{{ s.hash }}"
+             onclick="document.getElementById('diff_b').value=this.value"></td>
+  <td><span class="badge">{{ s.hash }}</span></td>
+  <td>{{ s.name }}</td>
+  <td>{{ s.created[:19] }}</td>
+  <td>{% if s.gate_ok %}✓{% elif s.gate_ok == false %}✗{% endif %}</td>
+  <td>{{ s.description }}</td>
+</tr>
+{% endfor %}
+</table>
+<form method="get" action="/snapshots">
+  <input type="text" id="diff_a" name="a" value="{{ a }}" placeholder="хэш A">
+  <input type="text" id="diff_b" name="b" value="{{ b }}" placeholder="хэш B">
+  <button type="submit">дифф</button>
+</form>
+{% if diff %}<pre>{{ diff }}</pre>{% endif %}
+{% endblock %}

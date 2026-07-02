@@ -1,0 +1,9 @@
+extends: base.yaml
+name: data-scaling
+description: >
+  Гипотеза о данных MS MARCO: при фиксированном компьюте (15k шагов × batch 32
+  = 480k показов) качество зависит от числа УНИКАЛЬНЫХ триплетов N.
+  N задаётся свипом: lab sweep configs/data_scaling.yaml data.train_triples=30000,120000,480000,1920000
+
+train:
+  seeds: [1, 2, 3]

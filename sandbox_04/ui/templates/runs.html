@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Запуски</h1>
+<form method="get" action="/runs">
+  <input type="text" name="filter" value="{{ filter }}" placeholder="фильтр по id">
+  <button type="submit">фильтр</button>
+</form>
+<div hx-get="/runs/table?filter={{ filter }}" hx-trigger="load, every 5s" hx-swap="innerHTML">
+загрузка…
+</div>
+{% endblock %}

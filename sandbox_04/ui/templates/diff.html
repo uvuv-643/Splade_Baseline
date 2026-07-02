@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Дифф: {{ a }} → {{ b }}</h1>
+<h2>Конфиг</h2>
+<pre>{{ cfg_diff }}</pre>
+<h2>Код (снапшоты)</h2>
+<pre>{{ code_diff }}</pre>
+{% endblock %}

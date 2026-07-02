@@ -1,0 +1,17 @@
+extends: ../base.yaml
+name: smoke
+description: "быстрая проверка пайплайна на gate-наборе (~5-10 мин на GPU)"
+
+data:
+  train_triples: 2000
+
+train:
+  seeds: [1]
+  batch_size: 16
+  max_steps: 200
+  warmup_steps: 20
+  flops_warmup_steps: 100
+  log_every: 10
+
+eval:
+  datasets: [gate]

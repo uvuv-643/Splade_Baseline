@@ -1,0 +1,17 @@
+<table>
+<tr><th>run</th><th>статус</th><th>seed</th><th>снапшот</th><th>метрики</th><th>мин</th><th>создан</th></tr>
+{% for r in runs %}
+<tr>
+  <td><a href="/runs/{{ r.id }}">{{ r.id }}</a></td>
+  <td class="status-{{ r.status }}">{{ r.status }}</td>
+  <td>{{ r.seed }}</td>
+  <td><span class="badge">{{ r.snapshot }}</span></td>
+  <td>
+    {% for k, v in r.metrics.items() %}{{ k }}={{ "%.4f"|format(v) }} {% endfor %}
+  </td>
+  <td>{% if r.duration_s %}{{ "%.0f"|format(r.duration_s / 60) }}{% endif %}</td>
+  <td>{{ r.created[:19] }}</td>
+</tr>
+{% endfor %}
+</table>
+{% if not runs %}<p>запусков нет</p>{% endif %}

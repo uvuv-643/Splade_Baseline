@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>splade lab</title>
+<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+<style>
+body { font: 14px/1.5 -apple-system, "Segoe UI", sans-serif; margin: 0; color: #222; }
+nav { background: #1a2634; padding: 10px 20px; }
+nav a { color: #cfe2ff; margin-right: 18px; text-decoration: none; font-weight: 600; }
+nav a:hover { color: #fff; }
+main { padding: 16px 24px; max-width: 1200px; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+th, td { border: 1px solid #ddd; padding: 5px 9px; text-align: left; font-size: 13px; }
+th { background: #f0f3f7; }
+tr:hover td { background: #f8fbff; }
+pre { background: #f6f6f6; border: 1px solid #ddd; padding: 10px; overflow-x: auto; font-size: 12px; }
+.status-done { color: #0a7d24; font-weight: 600; }
+.status-running { color: #0057c2; font-weight: 600; }
+.status-failed { color: #c0261f; font-weight: 600; }
+.status-queued { color: #866a00; font-weight: 600; }
+.badge { background: #eef; border-radius: 4px; padding: 1px 6px; font-family: monospace; font-size: 12px; }
+button { cursor: pointer; padding: 3px 10px; border: 1px solid #999; border-radius: 4px; background: #fff; }
+button:hover { background: #eef; }
+input[type=text], select, textarea { padding: 4px 6px; border: 1px solid #bbb; border-radius: 4px; }
+textarea { font-family: monospace; font-size: 12px; }
+.warn { background: #fff4e0; border: 1px solid #e0b040; padding: 8px 12px; border-radius: 4px; margin: 8px 0; }
+.primary-metric { background: #eaf4ff; }
+form.inline { display: inline; }
+h2 { margin-top: 24px; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/runs">Runs</a>
+  <a href="/queue">Queue</a>
+  <a href="/compare">Compare</a>
+  <a href="/snapshots">Snapshots</a>
+</nav>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

@@ -22,17 +22,18 @@
 
 <h2>В очереди ({{ jobs|length }})</h2>
 <table>
-<tr><th>#</th><th>run_id</th><th>снапшот</th><th></th></tr>
+<tr><th>#</th><th>вид</th><th>run_id</th><th>снапшот / датасеты</th><th></th></tr>
 {% for j in jobs %}
 <tr>
   <td>{{ loop.index }}</td>
+  <td>{{ j.kind }}{% if j.dep_state == "waiting" %} <span class="badge">ждёт train</span>{% elif j.dep_state == "dep_failed" %} <span class="badge">train упал</span>{% endif %}</td>
   <td>{{ j.run_id }}</td>
   <td><span class="badge">{{ j.snapshot }}</span></td>
   <td>
-    <form class="inline" method="post" action="/queue/{{ j.run_id }}/up"><button>↑</button></form>
-    <form class="inline" method="post" action="/queue/{{ j.run_id }}/down"><button>↓</button></form>
-    <form class="inline" method="post" action="/queue/{{ j.run_id }}/delete"
-          onsubmit="return confirm('Удалить {{ j.run_id }} из очереди?')">
+    <form class="inline" method="post" action="/queue/{{ j.file }}/up"><button>↑</button></form>
+    <form class="inline" method="post" action="/queue/{{ j.file }}/down"><button>↓</button></form>
+    <form class="inline" method="post" action="/queue/{{ j.file }}/delete"
+          onsubmit="return confirm('Удалить {{ j.run_id }} ({{ j.kind }}) из очереди?')">
       <button>удалить</button>
     </form>
   </td>

@@ -105,9 +105,17 @@ def run_kill(run_id: str):
 
 @app.get("/queue", response_class=HTMLResponse)
 def queue_page(request: Request):
-    jobs = [{"file": p.name, "run_id": job["run_id"],
-             "snapshot": job["snapshot"]["hash"], "created": job.get("created", "")}
-            for p, job in queue_mod.list_jobs()]
+    jobs = []
+    for p, job in queue_mod.list_jobs():
+        kind = job.get("kind", "train")
+        jobs.append({
+            "file": p.name, "run_id": job["run_id"], "kind": kind,
+            "snapshot": job.get("snapshot", {}).get("hash", "")
+                        if kind == "train"
+                        else ",".join(job.get("datasets", [])),
+            "dep_state": queue_mod.dep_state(job),
+            "created": job.get("created", ""),
+        })
     running = [r for r in runs.list_runs() if r["status"] == "running"]
     configs = sorted(str(p.relative_to(CONFIGS_DIR))
                      for p in CONFIGS_DIR.rglob("*.yaml"))
@@ -133,7 +141,8 @@ def _gate_and_enqueue(cfg, snap_hash, snap_name, do_gate):
                 return
         for cfg_seed in config_mod.expand_seeds(cfg):
             run_id = runs.new_run_id(cfg_seed["name"], cfg_seed["train"]["seed"])
-            queue_mod.enqueue(cfg_seed, snap_hash, snap_name, run_id)
+            run_dir = runs.reserve_run(run_id, cfg_seed, snap_hash, snap_name)
+            queue_mod.enqueue_train(cfg_seed, snap_hash, snap_name, run_dir.name)
         GATING.pop(key, None)
     except Exception as e:
         GATING[key] = f"ошибка: {e}"

@@ -18,6 +18,8 @@ DISPLAY_METRICS = ("mrr@10", "ndcg@10", "recall@10", "recall@100", "recall@1000"
 def primary_metrics(dataset: str) -> tuple:
     if dataset.startswith("trec-dl"):
         return ("ndcg@10",)
+    if dataset.startswith("beir-"):  # BEIR zero-shot: главная метрика — nDCG@10
+        return ("ndcg@10",)
     if dataset.startswith("msmarco-dev"):
         return ("mrr@10", "ndcg@10")
     return ("mrr@10",)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from . import config as config_mod
 from .paths import MODELS_REGISTRY, RUNS_DIR
 
 
@@ -26,6 +27,20 @@ def create_run_dir(run_id: str) -> Path:
         n += 1
         d = RUNS_DIR / f"{run_id}-{n}"
     d.mkdir(parents=True)
+    return d
+
+
+def reserve_run(run_id: str, cfg: dict, snap_hash: str, snap_name: str) -> Path:
+    """Создаёт каталог запуска заранее (при постановке в очередь): пишет
+    config.yaml, snapshot.json и status='queued'. Возвращает каталог с
+    фактическим id (если run_id занят — с суффиксом). Так запуск сразу виден в
+    `lab status`/UI, а eval-джоб может ссылаться на него по имени каталога для
+    цепочки train→eval."""
+    d = create_run_dir(run_id)
+    (d / "config.yaml").write_text(config_mod.dump(cfg), encoding="utf-8")
+    (d / "snapshot.json").write_text(
+        json.dumps({"hash": snap_hash, "name": snap_name}), encoding="utf-8")
+    set_status(d, "queued")
     return d
 
 

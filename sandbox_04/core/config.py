@@ -102,13 +102,24 @@ def set_path(cfg: dict, dotted: str, value):
     node[keys[-1]] = value
 
 
+def _parse_scalar(text: str):
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return yaml.safe_load(text)
+
+
 def parse_sweep(tokens: list) -> dict:
     sweep = {}
     for tok in tokens:
         if "=" not in tok:
             raise ValueError(f"ожидается key=v1,v2 — получено {tok!r}")
         key, raw = tok.split("=", 1)
-        sweep[key.strip()] = [yaml.safe_load(v) for v in raw.split(",")]
+        sweep[key.strip()] = [_parse_scalar(v) for v in raw.split(",")]
     return sweep
 
 

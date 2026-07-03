@@ -5,12 +5,11 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 from . import config as config_mod
 from . import queue as queue_mod
 from . import runner, runs
-from .paths import QUEUE_DIR, ROOT, RUNS_DIR, WORKER_LOG, WORKER_PIDFILE
+from .paths import QUEUE_DIR, ROOT, WORKER_LOG, WORKER_PIDFILE
 
 POLL_S = 5
 
@@ -53,14 +52,71 @@ def adopt_stale():
 
 
 def start_job(job: dict, gpu):
-    run_dir = runs.create_run_dir(job["run_id"])
-    (run_dir / "config.yaml").write_text(
-        config_mod.dump(job["config"]), encoding="utf-8")
-    (run_dir / "snapshot.json").write_text(
-        json.dumps(job["snapshot"]), encoding="utf-8")
-    runs.set_status(run_dir, "queued")
+    """Запускает джоб по его виду. Возвращает (proc, run_dir, kind)."""
+    kind = job.get("kind", "train")
+    run_dir = runs.run_dir(job["run_id"])
+    if kind == "eval":
+        proc = runner.start_eval_process(
+            run_dir, job["datasets"], job.get("save_index", False), gpu)
+        return proc, run_dir, kind
+    # train: каталог обычно уже зарезервирован (runs.reserve_run) при enqueue.
+    # Fallback для старых/ручных джобов, несущих config+snapshot внутри себя.
+    if not (run_dir / "config.yaml").exists():
+        run_dir = runs.create_run_dir(job["run_id"])
+        (run_dir / "config.yaml").write_text(
+            config_mod.dump(job["config"]), encoding="utf-8")
+        (run_dir / "snapshot.json").write_text(
+            json.dumps(job["snapshot"]), encoding="utf-8")
+        runs.set_status(run_dir, "queued")
     proc = runner.start_run_process(run_dir, gpu)
-    return proc, run_dir
+    return proc, run_dir, kind
+
+
+def _finish_job(gpu, active):
+    proc, run_dir, job_path, kind = active[gpu]
+    code = proc.poll()
+    if code is None:
+        return False
+    if kind == "eval":
+        # eval не владеет статусом запуска: train-запуск как был 'done', так и
+        # остаётся. Упавший eval-джоб уводим в failed/ для наглядности.
+        if code != 0:
+            queue_mod.fail_job(job_path, f"eval {run_dir.name}: exit={code}\n"
+                                         f"см. {run_dir}/stdout.log и eval_log.jsonl")
+            _log(f"{run_dir.name}: EVAL ПРОВАЛ (exit={code}, gpu={gpu})")
+        else:
+            job_path.unlink(missing_ok=True)
+            _log(f"{run_dir.name}: eval готов (gpu={gpu})")
+    else:
+        status = runs.get_status(run_dir)
+        if status not in ("done", "failed"):
+            runs.set_status(run_dir, "failed")
+            status = "failed"
+        job_path.unlink(missing_ok=True)
+        _log(f"{run_dir.name}: {status} (exit={code}, gpu={gpu})")
+    del active[gpu]
+    return True
+
+
+def _shutdown(active):
+    for gpu, (proc, run_dir, job_path, kind) in active.items():
+        _log(f"останавливаю {run_dir.name} (gpu={gpu}, {kind})")
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except OSError:
+                pass
+        if kind == "eval":
+            # eval идемпотентен (перестраивает индекс/переписывает метрики) —
+            # возвращаем джоб в очередь, доедет при следующем старте воркера.
+            job_path.rename(QUEUE_DIR / job_path.name)
+        else:
+            runs.set_status(run_dir, "failed")
+            job_path.unlink(missing_ok=True)
+    _log("остановлен")
 
 
 def worker_loop(gpus: list):
@@ -77,32 +133,10 @@ def worker_loop(gpus: list):
 
     while True:
         for gpu in list(active):
-            proc, run_dir, job_path = active[gpu]
-            code = proc.poll()
-            if code is None:
-                continue
-            status = runs.get_status(run_dir)
-            if status not in ("done", "failed"):
-                runs.set_status(run_dir, "failed")
-                status = "failed"
-            job_path.unlink(missing_ok=True)
-            _log(f"{run_dir.name}: {status} (exit={code}, gpu={gpu})")
-            del active[gpu]
+            _finish_job(gpu, active)
 
         if stop["flag"]:
-            for gpu, (proc, run_dir, job_path) in active.items():
-                _log(f"останавливаю {run_dir.name} (gpu={gpu})")
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    proc.wait(timeout=30)
-                except (OSError, subprocess.TimeoutExpired):
-                    try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    except OSError:
-                        pass
-                runs.set_status(run_dir, "failed")
-                job_path.unlink(missing_ok=True)
-            _log("остановлен")
+            _shutdown(active)
             return
 
         for gpu in gpus:
@@ -111,9 +145,9 @@ def worker_loop(gpus: list):
             job_path, job = queue_mod.claim_next()
             if job is None:
                 break
-            proc, run_dir = start_job(job, gpu)
-            active[gpu] = (proc, run_dir, job_path)
-            _log(f"{run_dir.name}: запущен на gpu={gpu} (pid={proc.pid})")
+            proc, run_dir, kind = start_job(job, gpu)
+            active[gpu] = (proc, run_dir, job_path, kind)
+            _log(f"{run_dir.name}: запущен {kind} на gpu={gpu} (pid={proc.pid})")
 
         time.sleep(POLL_S)
 
@@ -165,12 +199,14 @@ def stop_daemon():
 
 def daemon_status():
     pid = daemon_pid()
-    n_queued = len(queue_mod.list_jobs())
+    jobs = queue_mod.list_jobs()
+    n_wait = sum(1 for _, j in jobs if queue_mod.dep_state(j) == "waiting")
     running = [r for r in runs.list_runs() if r["status"] == "running"]
     if pid:
         print(f"worker: работает (pid={pid})")
     else:
         print("worker: не запущен")
-    print(f"очередь: {n_queued} джобов")
+    waiting_note = f" (из них {n_wait} ждут зависимость)" if n_wait else ""
+    print(f"очередь: {len(jobs)} джобов{waiting_note}")
     for r in running:
         print(f"бежит: {r['id']}")

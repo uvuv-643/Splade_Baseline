@@ -1,6 +1,7 @@
 import gzip
 import json
 import tarfile
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,40 @@ DATASETS = {
     "trec-dl-2020-lite": {"corpus": "msmarco-lite", "queryset": "trec-dl-2020", "rel_threshold": 2},
     "gate": {"corpus": "gate", "queryset": "gate-dev", "rel_threshold": 1},
 }
+
+# --- BEIR zero-shot наборы (строки таблицы исходной статьи SPLADE/BEIR) ---
+# Каждый набор самодостаточен: свой корпус + свои запросы + свои qrels (в отличие
+# от MS MARCO, где корпус общий). Поэтому и corpus, и queryset называем именем
+# набора. rel_threshold=1: BEIR-qrels бинарны или градуированы, nDCG@10 (главная
+# метрика BEIR) считает любые rel>0, а recall/MRR — rel>=1 (стандарт BEIR).
+# Ключ слева — как в нашем реестре; PAPER_LABEL — строка таблицы статьи; archive —
+# имя zip на зеркале BEIR; split — какой qrels-сплит берём для оценки.
+BEIR_MIRROR = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{archive}.zip"
+BEIR_SETS = {
+    # ключ (=corpus=queryset)   archive              split   PAPER_LABEL
+    "beir-arguana":       {"archive": "arguana",        "split": "test", "paper": "ArguAna"},
+    "beir-climate-fever": {"archive": "climate-fever",  "split": "test", "paper": "Climate-FEVER"},
+    "beir-dbpedia":       {"archive": "dbpedia-entity", "split": "test", "paper": "DBPedia"},
+    "beir-fever":         {"archive": "fever",          "split": "test", "paper": "FEVER"},
+    "beir-fiqa":          {"archive": "fiqa",           "split": "test", "paper": "FiQA-2018"},
+    "beir-hotpotqa":      {"archive": "hotpotqa",       "split": "test", "paper": "HotpotQA"},
+    "beir-nfcorpus":      {"archive": "nfcorpus",       "split": "test", "paper": "NFCorpus"},
+    "beir-nq":            {"archive": "nq",             "split": "test", "paper": "NQ"},
+    "beir-quora":         {"archive": "quora",          "split": "test", "paper": "Quora"},
+    "beir-scidocs":       {"archive": "scidocs",        "split": "test", "paper": "SCIDOCS"},
+    "beir-scifact":       {"archive": "scifact",        "split": "test", "paper": "SciFact"},
+    "beir-trec-covid":    {"archive": "trec-covid",     "split": "test", "paper": "TREC-COVID"},
+    "beir-touche2020":    {"archive": "webis-touche2020","split": "test", "paper": "Touché-2020"},
+}
+# Небольшие корпуса (< ~600k пассажей): кодируются за минуты, годятся для smoke.
+BEIR_SMALL = ("beir-arguana", "beir-fiqa", "beir-nfcorpus", "beir-quora",
+              "beir-scidocs", "beir-scifact", "beir-trec-covid", "beir-touche2020")
+# Крупные корпуса (миллионы пассажей): проверяются на целостность, но в smoke не
+# кодируются — их гоняют полноценным прогоном/до-eval обученной модели.
+BEIR_LARGE = ("beir-climate-fever", "beir-dbpedia", "beir-fever",
+              "beir-hotpotqa", "beir-nq")
+for _name, _spec in BEIR_SETS.items():
+    DATASETS[_name] = {"corpus": _name, "queryset": _name, "rel_threshold": 1}
 
 CORPORA_DIR = EVAL_DIR / "corpora"
 QUERYSETS_DIR = EVAL_DIR / "querysets"
@@ -178,6 +213,110 @@ def prepare_trec_queryset(year: int, force=False):
     kept.sort(key=lambda ln: int(ln.split("\t", 1)[0]))
     _write_lines(qpath, kept)
     print(f"[data] {name}: {len(kept)} запросов, {len(rows)} qrels")
+
+
+# --- BEIR: скачивание zip, распаковка, приведение к канонической схеме TSV ---
+
+def _beir_clean(text: str) -> str:
+    """Убираем табы/переводы строк — иначе построчный TSV поедет по столбцам."""
+    return " ".join((text or "").split())
+
+
+def _beir_iter_jsonl(path: Path, desc: str):
+    with open(path, encoding="utf-8") as f:
+        for line in tqdm(f, desc=desc, unit=" строк", unit_scale=True):
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+
+def _beir_read_qrels(qrels_path: Path):
+    """BEIR qrels: 'query-id\\tcorpus-id\\tscore' с шапкой -> [(qid, pid, rel)]."""
+    rows = []
+    with open(qrels_path, encoding="utf-8") as f:
+        header = f.readline()
+        if header and "query" not in header.lower():
+            f.seek(0)  # шапки не было — откатываемся к первой строке
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 3:
+                try:
+                    rows.append((parts[0], parts[1], int(float(parts[2]))))
+                except ValueError:
+                    continue
+    return rows
+
+
+def _beir_extract(zip_path: Path, raw_dir: Path, archive: str) -> Path:
+    """Распаковывает zip; возвращает каталог с corpus.jsonl/queries.jsonl/qrels/."""
+    target = raw_dir / archive
+    if (target / "corpus.jsonl").exists():
+        return target
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(raw_dir)
+    if (target / "corpus.jsonl").exists():
+        return target
+    for p in raw_dir.rglob("corpus.jsonl"):  # структура иная — ищем corpus.jsonl
+        return p.parent
+    raise RuntimeError(f"в {zip_path} не найден corpus.jsonl")
+
+
+def prepare_beir_set(name: str, force=False):
+    """Готовит один BEIR-набор: качает zip, распаковывает и пишет
+    corpora/<name>/collection.tsv + querysets/<name>/{queries,qrels}.tsv.
+    Корпус: title+text (конвенция BEIR). Запросы: только те, что есть в qrels
+    выбранного сплита (в queries.jsonl лежат все сплиты)."""
+    spec = BEIR_SETS[name]
+    cpath = corpus_path(name)
+    qpath, rpath = queryset_paths(name)
+    if cpath.exists() and qpath.exists() and rpath.exists() and not force:
+        print(f"[data] есть {name}, пропуск")
+        return
+    archive, split = spec["archive"], spec["split"]
+    url = BEIR_MIRROR.format(archive=archive)
+    zip_dest = _download(url, RAW_DIR / f"{archive}.zip")
+    src = _beir_extract(zip_dest, RAW_DIR, archive)
+
+    qrels_rows = _beir_read_qrels(src / "qrels" / f"{split}.tsv")
+    if not qrels_rows:
+        raise RuntimeError(f"пустой qrels: {src / 'qrels' / (split + '.tsv')}")
+    keep_qids = {qid for qid, _, _ in qrels_rows}
+    _write_lines(rpath, (f"{qid}\t0\t{pid}\t{rel}" for qid, pid, rel in qrels_rows))
+
+    n_q = 0
+    q_lines = []
+    for obj in _beir_iter_jsonl(src / "queries.jsonl", f"{name}:queries"):
+        qid = str(obj.get("_id", obj.get("id")))
+        if qid in keep_qids:
+            q_lines.append(f"{qid}\t{_beir_clean(obj.get('text', ''))}")
+            n_q += 1
+    _write_lines(qpath, q_lines)
+
+    n_c = 0
+
+    def corpus_lines():
+        nonlocal n_c
+        for obj in _beir_iter_jsonl(src / "corpus.jsonl", f"{name}:corpus"):
+            pid = str(obj.get("_id", obj.get("id")))
+            text = _beir_clean(f"{obj.get('title', '')} {obj.get('text', '')}")
+            n_c += 1
+            yield f"{pid}\t{text}"
+
+    _write_lines(cpath, corpus_lines())
+    print(f"[data] {name} ({spec['paper']}): corpus={n_c} queries={n_q} "
+          f"qrels={len(qrels_rows)}")
+
+
+def prepare_beir(only=None, force=False):
+    """Готовит набор BEIR-датасетов (по умолчанию — все из BEIR_SETS)."""
+    names = list(only) if only else list(BEIR_SETS)
+    for name in names:
+        print(f"[data] === {name} ===")
+        prepare_beir_set(name, force=force)
+
+
+def prepare_beir_small(force=False):
+    prepare_beir(only=BEIR_SMALL, force=force)
 
 
 def _all_judged_pids() -> set:
@@ -342,11 +481,17 @@ def dataset_files(name: str) -> list:
 
 
 def eval_data_hash(dataset_names) -> str:
-    manifest = load_manifest()
+    """Хэш замороженных eval-данных. sha256 берём из manifest; если файла там
+    ещё нет (например BEIR подготовили после заморозки msmarco-манифеста) —
+    считаем sha256 с диска на лету, чтобы прогон не падал. Обычные msmarco/trec
+    наборы всегда в манифесте, так что fallback их не замедляет."""
+    files = load_manifest().get("files", {})
     parts = []
     for ds in sorted(set(dataset_names)):
         for rel in dataset_files(ds):
-            parts.append(f"{rel}:{manifest['files'][rel]['sha256']}")
+            entry = files.get(rel)
+            sha = entry["sha256"] if entry else sha256_file(EVAL_DIR / rel)
+            parts.append(f"{rel}:{sha}")
     return sha256_text("\n".join(parts))[:12]
 
 
@@ -403,13 +548,23 @@ PREPARE_PARTS = {
     "lite": prepare_lite_corpus,
     "gate": prepare_gate,
     "train-pool": prepare_train_pool,
+    # BEIR: 'beir' — все 13 наборов таблицы статьи; 'beir-small' — только лёгкие
+    # (годятся для smoke); 'beir-<key>' — один набор точечно (см. BEIR_SETS).
+    "beir": prepare_beir,
+    "beir-small": prepare_beir_small,
 }
+for _bname in BEIR_SETS:  # точечно: --part beir-scifact и т.п.
+    PREPARE_PARTS[_bname] = (lambda n: (lambda force=False: prepare_beir_set(n, force)))(_bname)
+
+# Части, которые собирает `lab data prepare --all`. BEIR сюда НЕ входит: он
+# тяжёлый (десятки GB) и ставится осознанно через --part beir / beir-small.
+CORE_PARTS = ("collection", "dev", "trec", "lite", "gate", "train-pool")
 
 
 def prepare_all(force=False):
-    for name, fn in PREPARE_PARTS.items():
+    for name in CORE_PARTS:
         print(f"[data] === {name} ===")
-        fn(force=force)
+        PREPARE_PARTS[name](force=force)
     overlaps = check_leakage()
     print(f"[data] утечка train→eval (пересечение текстов запросов): {overlaps}")
     if any(overlaps.values()):

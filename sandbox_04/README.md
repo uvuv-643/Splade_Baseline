@@ -23,7 +23,7 @@ pip install -r requirements.txt
 ## Данные (один раз)
 
 ```bash
-./lab data prepare --all        # ~1 час, ~12GB диска, ~4GB трафика
+./lab data prepare --all        # ~1 час, ~12GB диска, ~4GB трафика (без BEIR)
 ./lab data status               # что готово
 ./lab data verify               # sha256 + количества против manifest
 ./lab test                      # теперь пройдут и тесты целостности данных
@@ -40,6 +40,47 @@ pip install -r requirements.txt
 | `trec-dl-2019/2020` | 43/54 запроса, градуированные qrels | nDCG@10 (main), порог бинарных метрик rel≥2 |
 | train pool | первые 2M триплетов `triples.train.small` | из него сэмплируются train-данные |
 
+### BEIR zero-shot наборы (13 строк таблицы статьи)
+
+Отдельно от `--all` (тяжёлые, ставятся осознанно) — 13 стандартных BEIR-наборов,
+ровно те, что в таблице исходной статьи. Каждый самодостаточен (свой корпус +
+запросы + qrels), главная метрика — **nDCG@10**.
+
+```bash
+./lab data prepare --part beir          # все 13 наборов (~15-20GB диска)
+./lab data prepare --part beir-small    # только лёгкие (для smoke, ~2GB)
+./lab data prepare --part beir-scifact  # один набор точечно
+./lab data verify                       # проверит sha256 всех скачанных, в т.ч. BEIR
+```
+
+| наш ключ | строка статьи | archive (BEIR) | корпус |
+|---|---|---|---|
+| `beir-arguana` | ArguAna | arguana | ~8.7K (small) |
+| `beir-climate-fever` | Climate-FEVER | climate-fever | 5.4M (large) |
+| `beir-dbpedia` | DBPedia | dbpedia-entity | 4.6M (large) |
+| `beir-fever` | FEVER | fever | 5.4M (large) |
+| `beir-fiqa` | FiQA-2018 | fiqa | ~57K (small) |
+| `beir-hotpotqa` | HotpotQA | hotpotqa | 5.2M (large) |
+| `beir-nfcorpus` | NFCorpus | nfcorpus | ~3.6K (small) |
+| `beir-nq` | NQ | nq | 2.7M (large) |
+| `beir-quora` | Quora | quora | ~523K (small) |
+| `beir-scidocs` | SCIDOCS | scidocs | ~25K (small) |
+| `beir-scifact` | SciFact | scifact | ~5.2K (small) |
+| `beir-trec-covid` | TREC-COVID | trec-covid | ~171K (small) |
+| `beir-touche2020` | Touché-2020 | webis-touche2020 | ~382K (small) |
+
+`small`/`large` — эвристика по размеру корпуса: `beir-small` (8 лёгких) кодируются
+за минуты и входят в smoke; крупные проверяются целостностью и гоняются полным
+прогоном / до-eval (`lab eval <run> --datasets beir-fever,...`) на обученной модели.
+
+### Smoke на BEIR (проверка, что данные скачались)
+
+```bash
+./lab data prepare --part beir-small,train-pool   # если ещё не готовили
+./lab run configs/presets/smoke_beir.yaml         # мини-train + zero-shot eval на 8 лёгких BEIR
+./lab status                                       # nDCG@10 по каждому набору
+```
+
 Абсолютные числа на lite-корпусе завышены относительно полного (меньше
 дистракторов), но **сравнения между системами валидны** — у всех один и тот же
 замороженный корпус. Для цифр «как в статье» — до-eval на полном корпусе
@@ -50,6 +91,85 @@ pip install -r requirements.txt
 ```bash
 ./lab run configs/presets/smoke.yaml
 ./lab status
+```
+
+## Всё через очередь на 1 GPU (целевой сценарий)
+
+Идея: **ничего не считается в терминале**. Вы только ставите задачи в очередь и
+запускаете один worker-демон на вашем единственном GPU — он по порядку сам
+обучает модели, строит индексы, считает eval и сохраняет метрики. Терминал можно
+закрыть, ssh оборвать — worker живёт (`start_new_session`).
+
+Два вида джобов в очереди:
+
+- **train** — полный цикл `train → построение индекса → eval` из снапшота кода
+  (это уже одна атомарная джоба; метрики и `per_query.parquet` пишутся в конце);
+- **eval** — до-eval уже обученной модели на новых/полных датасетах: строит
+  индекс на их корпусе и дописывает метрики в тот же `runs/<id>/`. Может
+  **зависеть** от train-джоба (`depends_on`) — тогда worker не возьмёт eval,
+  пока train не завершится со статусом `done`. Так получается цепочка
+  train→index→eval, исполняемая сама.
+
+Worker на 1 GPU берёт задачи строго по одной: пока идёт train, зависимый eval
+«ждёт», независимые джобы очереди — нет (worker их пропускает вперёд не будет —
+берёт первый *готовый*).
+
+### 6 команд по порядку (пример: обучить и посчитать полный eval)
+
+Разберём ровно 6 команд, которые ставятся в очередь и постепенно исполняются на
+одном GPU. Здесь: обучаем модель, а тяжёлый eval на **полном** корпусе
+`msmarco-dev` идёт отдельной джобой сразу после обучения (цепочка).
+
+```bash
+# 0. один раз: поднять worker-демон на вашем единственном GPU (номер 0)
+./lab worker start --gpus 0
+
+# 1. поставить обучение + следом (авто-зависимость) eval на полном msmarco-dev.
+#    train сам сделает быстрый lite-eval (base.yaml), а эта eval-джоба добавит
+#    цифры «как в статье» на полном корпусе. gate прогонится перед постановкой.
+./lab queue configs/base.yaml --eval-datasets msmarco-dev,trec-dl-2019,trec-dl-2020 --save-index
+
+# 2. ещё один вариант модели (например, другой lambda) — тоже train+eval цепочкой
+./lab queue configs/base.yaml --snap <снапшот_из_шага_1> --no-gate \
+      --eval-datasets msmarco-dev --save-index
+
+# 3. посмотреть, что стоит в очереди и что уже считается
+./lab status
+
+# 4. живой лог текущего запуска (Ctrl-C не трогает сам запуск)
+./lab tail <run-id> -f
+
+# 5. когда всё посчиталось — статистика и отчёт по завершённым запускам
+./lab compare --exp base --out night1
+```
+
+Что произойдёт: после шага 1 в очереди появятся `train`-джоб и зависимый
+`eval`-джоб; worker возьмёт train, обучит, сохранит модель + lite-метрики, затем
+возьмёт eval (он «разморозится», как только train станет `done`), построит
+полный индекс msmarco-full и допишет метрики в тот же `runs/<id>/metrics.json`.
+Всё это — без единой блокирующей команды в терминале.
+
+**Вариант «6 отдельных обучений»**: если 6 команд — это просто 6 разных моделей
+(train+eval уже внутри одной train-джобы, полный корпус не нужен), то шесть раз
+`./lab queue <config>` и один `./lab worker start --gpus 0` — worker прогонит их
+по очереди:
+
+```bash
+./lab worker start --gpus 0
+./lab queue configs/base.yaml                        # 1-я модель (с gate)
+./lab queue configs/exp2.yaml --snap <snap> --no-gate  # 2-я
+./lab queue configs/exp3.yaml --snap <snap> --no-gate  # 3-я
+# ... и т.д. до шести; затем:
+./lab status
+./lab compare --exp base --out night1
+```
+
+**До-eval уже обученной модели** (без переобучения) тоже уходит в очередь, а не
+блокирует терминал:
+
+```bash
+./lab eval <run-id> --datasets msmarco-dev --save-index   # ставит eval-джоб
+./lab eval <run-id> --datasets beir-fever --now           # ...или считать сейчас (блокирует)
 ```
 
 ## Ночной эксперимент: данные MS MARCO и качество
@@ -136,15 +256,18 @@ UI ничего не хранит — источник правды только
 
 ```bash
 ./lab run cfg.yaml                    # сейчас, в форграунде, из авто-снапшота
-./lab queue cfg.yaml [--snap X] [--no-gate]
-./lab sweep cfg.yaml k=v1,v2 ... [--gate-all]   # gate по умолч. только 1-й вариант
-./lab worker start|stop|status [--gpus 0,1]
-./lab status                          # очередь + таблица запусков
+./lab queue cfg.yaml [--snap X] [--no-gate] [--eval-datasets ds1,ds2] [--save-index]
+./lab sweep cfg.yaml k=v1,v2 ... [--gate-all] [--eval-datasets ds1,ds2] [--save-index]
+#   --eval-datasets: после train автоматически ставится зависимый eval-джоб
+#                    (цепочка train→index→eval исполняется сама на 1 GPU)
+./lab worker start|stop|status [--gpus 0]   # на 1 GPU: --gpus 0
+./lab status                          # очередь (train/eval, кто ждёт) + запуски
 ./lab tail <run> [-f] / ./lab kill <run>
 ./lab snap save <имя> -m "..." / ./lab snap list
 ./lab diff <a> <b>                    # run|snapshot: конфиг + unified diff кода
 ./lab compare <runs...> | --exp <имя> [--out dir]
-./lab eval <run> --datasets msmarco-dev,trec-dl-2019   # до-eval без переобучения
+./lab eval <run> --datasets msmarco-dev,trec-dl-2019 [--save-index]  # до-eval В ОЧЕРЕДЬ
+./lab eval <run> --datasets msmarco-dev --now          # ...или считать сейчас (блокирует)
 ./lab model name <run> <имя> -m "..."  # реестр весов (runs/models.json)
 ./lab data prepare|status|verify
 ./lab test
@@ -160,9 +283,10 @@ runs/<id>/
   status             # queued | running | done | failed
   meta.json          # core_hash, eval_data_hash, git sha, GPU, версии, длительность
   train_log.jsonl    # step, loss, компоненты, lr — построчно
-  metrics.json       # агрегаты по датасетам + nnz + тайминги
+  metrics.json       # агрегаты по датасетам + nnz + тайминги (train + до-eval)
   per_query.parquet  # dataset × qid × metric × value — основа всей статистики
-  index/             # опц. (eval.save_index) — док-матрица CSR для до-eval
+  eval_log.jsonl     # опц. — прогресс/итог eval-джобов (до-eval из очереди)
+  index/             # опц. (--save-index) — док-матрица CSR для до-eval
   model/             # HF-веса + токенизатор
   stdout.log, pid
 ```
@@ -225,8 +349,16 @@ Eval после train делает только core — код эксперим
   фиксируй одно значение на весь эксперимент) или `model.encode_batch_docs`.
 - **worker умер** (проверь `./lab worker status`) — просто `./lab worker start`:
   осиротевшие джобы вернутся в очередь, мёртвые running помечаются failed.
+  eval-джобы идемпотентны, поэтому при рестарте прерванный eval тоже вернётся
+  в очередь и досчитается.
 - **`сравнение невалидно: разные eval_data_hash`** — запуски мерились на разных
-  данных; пере-eval старый run: `./lab eval <run> --datasets <ds>`.
+  данных; пере-eval старый run в очередь: `./lab eval <run> --datasets <ds>`,
+  worker досчитает на GPU (не блокирует терминал).
+- **eval-джоб упал** — сам train-запуск остаётся `done` (eval не трогает его
+  статус); лог в `runs/<id>/stdout.log` и `runs/<id>/eval_log.jsonl`, сам джоб
+  уезжает в `queue/failed/`. Повторить: `./lab eval <run> --datasets <ds>`.
+- **eval не стартует, висит «ждёт train»** — это нормально: зависимый eval ждёт,
+  пока его train-джоб не станет `done`. `./lab status` покажет, кто кого ждёт.
 - **скачивание MS MARCO падает** — зеркала: замени в `core/data.py` хост
   `msmarco.z22.web.core.windows.net` на `msmarco.blob.core.windows.net`.
 - **повторить упавший джоб** — он самодостаточен: `./lab queue <конфиг>` заново

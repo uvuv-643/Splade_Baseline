@@ -1,0 +1,28 @@
+extends: ../base.yaml
+name: smoke-beir
+description: "smoke на скачанных BEIR-наборах: мини-обучение + zero-shot eval на лёгких BEIR-корпусах (проверка, что данные реально скачались и парсятся end-to-end)"
+
+data:
+  train_triples: 2000
+
+train:
+  seeds: [1]
+  batch_size: 16
+  max_steps: 200
+  warmup_steps: 20
+  flops_warmup_steps: 100
+  log_every: 10
+
+eval:
+  # только лёгкие BEIR-наборы (корпус < ~600k) — кодируются за минуты.
+  # крупные (climate-fever/dbpedia/fever/hotpotqa/nq) в smoke не входят: их
+  # проверяет `lab data verify` + тест целостности, а гонят полным прогоном.
+  datasets:
+    - beir-scifact
+    - beir-nfcorpus
+    - beir-scidocs
+    - beir-arguana
+    - beir-fiqa
+    - beir-quora
+    - beir-trec-covid
+    - beir-touche2020

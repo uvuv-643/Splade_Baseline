@@ -10,7 +10,7 @@ import yaml
 
 from . import config as config_mod
 from . import data, gate, queue as queue_mod, runs, snapshots, worker
-from .paths import REPORTS_DIR, ROOT, RUNS_DIR, SNAPSHOTS_DIR
+from .paths import REPORTS_DIR, ROOT
 
 
 def _load_validated(cfg_path: str) -> dict:
@@ -49,12 +49,39 @@ def _gate_or_die(cfg: dict, snap_hash: str, snap_name: str):
     print(f"[gate] ок за {dt}s ({gate_dir.name})")
 
 
-def _enqueue_all(variants: list, snap_hash: str, snap_name: str):
+def _validate_datasets(spec: str) -> list:
+    datasets = [d for d in spec.split(",") if d]
+    unknown = [x for x in datasets if x not in data.DATASETS]
+    if unknown:
+        sys.exit(f"неизвестные датасеты: {unknown}")
+    missing = data.datasets_prepared(datasets)
+    if missing:
+        sys.exit(f"eval-данные не готовы: {missing}\n"
+                 f"запустите: ./lab data prepare ...")
+    return datasets
+
+
+def _enqueue_all(variants: list, snap_hash: str, snap_name: str,
+                 eval_datasets=None, save_index=False) -> list:
+    """Ставит train-джобы (по варианту × сиду). Каталог запуска резервируется
+    сразу (runs.reserve_run) — запуск виден в `lab status`/UI как 'queued', и на
+    него можно навесить зависимый eval-джоб (цепочка train→eval). Возвращает
+    список фактических run_id."""
+    run_ids = []
     for cfg in variants:
         for cfg_seed in config_mod.expand_seeds(cfg):
             run_id = runs.new_run_id(cfg_seed["name"], cfg_seed["train"]["seed"])
-            queue_mod.enqueue(cfg_seed, snap_hash, snap_name, run_id)
-            print(f"[queue] + {run_id}")
+            run_dir = runs.reserve_run(run_id, cfg_seed, snap_hash, snap_name)
+            queue_mod.enqueue_train(cfg_seed, snap_hash, snap_name, run_dir.name)
+            print(f"[queue] + train {run_dir.name}")
+            run_ids.append(run_dir.name)
+            if eval_datasets:
+                queue_mod.enqueue_eval(run_dir.name, eval_datasets,
+                                       depends_on=run_dir.name,
+                                       save_index=save_index)
+                print(f"[queue]   ↳ eval {run_dir.name} "
+                      f"(после train): {eval_datasets}")
+    return run_ids
 
 
 def cmd_run(args):
@@ -64,29 +91,28 @@ def cmd_run(args):
     from . import runner
     for cfg_seed in config_mod.expand_seeds(cfg):
         run_id = runs.new_run_id(cfg_seed["name"], cfg_seed["train"]["seed"])
-        run_dir = runs.create_run_dir(run_id)
-        (run_dir / "config.yaml").write_text(config_mod.dump(cfg_seed), encoding="utf-8")
-        (run_dir / "snapshot.json").write_text(
-            json.dumps({"hash": snap_hash, "name": snap_name}), encoding="utf-8")
-        runs.set_status(run_dir, "queued")
-        print(f"[run] {run_id} (форграунд)")
+        run_dir = runs.reserve_run(run_id, cfg_seed, snap_hash, snap_name)
+        print(f"[run] {run_dir.name} (форграунд)")
         code = runner.run_foreground(run_dir)
         if code != 0:
-            sys.exit(f"[run] {run_id} упал (exit={code})")
+            sys.exit(f"[run] {run_dir.name} упал (exit={code})")
 
 
 def cmd_queue(args):
     cfg = _load_validated(args.config)
     _check_data_ready(cfg)
+    eval_datasets = _validate_datasets(args.eval_datasets) if args.eval_datasets else None
     snap_hash, snap_name = _snapshot_for(cfg, args.snap)
     if not args.no_gate:
         _gate_or_die(cfg, snap_hash, snap_name)
-    _enqueue_all([cfg], snap_hash, snap_name)
+    _enqueue_all([cfg], snap_hash, snap_name,
+                 eval_datasets=eval_datasets, save_index=args.save_index)
 
 
 def cmd_sweep(args):
     cfg = _load_validated(args.config)
     _check_data_ready(cfg)
+    eval_datasets = _validate_datasets(args.eval_datasets) if args.eval_datasets else None
     sweep = config_mod.parse_sweep(args.overrides)
     variants = config_mod.expand_sweep(cfg, sweep)
     for v in variants:
@@ -96,9 +122,11 @@ def cmd_sweep(args):
         to_gate = variants if args.gate_all else variants[:1]
         for v in to_gate:
             _gate_or_die(v, snap_hash, snap_name)
-    _enqueue_all(variants, snap_hash, snap_name)
+    _enqueue_all(variants, snap_hash, snap_name,
+                 eval_datasets=eval_datasets, save_index=args.save_index)
     n_jobs = sum(len(config_mod.expand_seeds(v)) for v in variants)
-    print(f"[sweep] {len(variants)} вариантов × сиды = {n_jobs} джобов в очереди")
+    tail = f" (+{n_jobs} eval-джобов)" if eval_datasets else ""
+    print(f"[sweep] {len(variants)} вариантов × сиды = {n_jobs} джобов в очереди{tail}")
 
 
 def cmd_worker(args):
@@ -117,7 +145,14 @@ def cmd_status(args):
     if jobs:
         print(f"=== очередь ({len(jobs)}) ===")
         for i, (_, job) in enumerate(jobs, 1):
-            print(f"{i:3d}. {job['run_id']}  snap={job['snapshot']['hash']}")
+            kind = job.get("kind", "train")
+            state = queue_mod.dep_state(job)
+            note = {"waiting": " (ждёт train)", "dep_failed": " (train упал!)"}.get(state, "")
+            if kind == "eval":
+                detail = f"eval {','.join(job.get('datasets', []))}"
+            else:
+                detail = f"train snap={job['snapshot']['hash']}"
+            print(f"{i:3d}. [{kind:5}] {job['run_id']}  {detail}{note}")
     all_runs = runs.list_runs()
     if not all_runs:
         print("запусков нет")
@@ -232,43 +267,18 @@ def cmd_compare(args):
 
 
 def cmd_eval(args):
-    from . import contract, runner
-    from . import eval as eval_mod
+    """До-eval готового запуска на новых датасетах (построение индекса + метрики).
+    По умолчанию ставится в очередь (не блокирует терминал) — worker посчитает
+    на GPU по очереди. С --now считает прямо сейчас в этом процессе."""
     d = runs.resolve_run(args.run)
-    cfg = yaml.safe_load((d / "config.yaml").read_text(encoding="utf-8"))
-    snap = json.loads((d / "snapshot.json").read_text(encoding="utf-8"))
-    datasets = args.datasets.split(",")
-    unknown = [x for x in datasets if x not in data.DATASETS]
-    if unknown:
-        sys.exit(f"неизвестные датасеты: {unknown}")
-    missing = data.datasets_prepared(datasets)
-    if missing:
-        sys.exit(f"данные не готовы: {missing}")
-    sys.path.insert(0, str(SNAPSHOTS_DIR / snap["hash"]))
-    device = runner.pick_device()
-    import exp.train
-    encoder = exp.train.load(d / "model", cfg, device)
-    contract.check_encoder_contract(encoder)
-    result, per_query = eval_mod.run_eval(encoder, datasets, cfg["eval"], device, d)
-
-    import pandas as pd
-    metrics_path = d / "metrics.json"
-    merged = json.loads(metrics_path.read_text(encoding="utf-8"))
-    merged["datasets"].update(result["datasets"])
-    merged["corpora"].update(result["corpora"])
-    metrics_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False),
-                            encoding="utf-8")
-    pq_path = d / "per_query.parquet"
-    old = pd.read_parquet(pq_path)
-    old = old[~old["dataset"].isin(datasets)]
-    pd.concat([old, per_query]).to_parquet(pq_path, index=False)
-
-    meta_path = d / "meta.json"
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta["eval_data_hash"] = data.eval_data_hash(list(merged["datasets"]))
-    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False),
-                         encoding="utf-8")
-    print(f"[eval] {d.name}: добавлены {datasets}")
+    datasets = _validate_datasets(args.datasets)
+    if args.now:
+        from . import runner
+        runner.execute_eval(d, datasets, save_index=args.save_index)
+    else:
+        queue_mod.enqueue_eval(d.name, datasets, save_index=args.save_index)
+        print(f"[queue] + eval {d.name}: {datasets}\n"
+              f"        запустите worker: ./lab worker start --gpus 0")
 
 
 def cmd_model(args):
@@ -282,7 +292,7 @@ def cmd_model(args):
 
 def cmd_data(args):
     if args.action == "prepare":
-        if args.part:
+        if args.part and not args.all:
             for part in args.part.split(","):
                 if part not in data.PREPARE_PARTS:
                     sys.exit(f"неизвестная часть {part!r} "
@@ -329,6 +339,11 @@ def build_parser():
     sp.add_argument("config")
     sp.add_argument("--snap")
     sp.add_argument("--no-gate", action="store_true")
+    sp.add_argument("--eval-datasets",
+                    help="после train поставить eval-джоб на этих датасетах "
+                         "(цепочка train→eval), напр. msmarco-dev,trec-dl-2019")
+    sp.add_argument("--save-index", action="store_true",
+                    help="сохранять построенный индекс в runs/<id>/index/")
     sp.set_defaults(fn=cmd_queue)
 
     sp = sub.add_parser("sweep", help="сетка: lab sweep cfg.yaml key=v1,v2 ...")
@@ -337,6 +352,9 @@ def build_parser():
     sp.add_argument("--snap")
     sp.add_argument("--no-gate", action="store_true")
     sp.add_argument("--gate-all", action="store_true")
+    sp.add_argument("--eval-datasets",
+                    help="после каждого train поставить eval-джоб на этих датасетах")
+    sp.add_argument("--save-index", action="store_true")
     sp.set_defaults(fn=cmd_sweep)
 
     sp = sub.add_parser("worker", help="демон очереди")
@@ -378,9 +396,13 @@ def build_parser():
     sp.add_argument("--out", help="каталог отчёта (report.md/json + png)")
     sp.set_defaults(fn=cmd_compare)
 
-    sp = sub.add_parser("eval", help="до-eval готового run на новых датасетах")
+    sp = sub.add_parser("eval", help="до-eval готового run: индекс + метрики (в очередь)")
     sp.add_argument("run")
     sp.add_argument("--datasets", required=True)
+    sp.add_argument("--now", action="store_true",
+                    help="считать сейчас в этом процессе (блокирует), "
+                         "а не ставить в очередь")
+    sp.add_argument("--save-index", action="store_true")
     sp.set_defaults(fn=cmd_eval)
 
     sp = sub.add_parser("model", help="реестр именованных моделей")
@@ -396,6 +418,7 @@ def build_parser():
     sp = sub.add_parser("data", help="подготовка/проверка данных")
     sp.add_argument("action", choices=["prepare", "status", "verify"])
     sp.add_argument("--part", help="collection,dev,trec,lite,gate,train-pool")
+    sp.add_argument("--all", action="store_true")
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(fn=cmd_data)
 

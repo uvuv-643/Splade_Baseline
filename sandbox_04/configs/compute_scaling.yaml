@@ -1,0 +1,22 @@
+extends: base.yaml
+name: compute-scaling
+description: >
+  Истинное масштабирование данных: компьют пропорционален N — один проход по
+  N уникальным триплетам полного пула (max_steps=auto → ceil(N / batch_size)).
+  Прогревы фиксированы как в оригинальном SPLADE: LR warmup 6000,
+  FLOPS quadratic warmup 50000. Пул готовится scripts/prepare_full_train_pool.py,
+  он же печатает точную команду свипа (верхняя точка = весь пул).
+
+data:
+  train_pool: data/train/triples-full.tsv
+  train_triples: 400000
+
+train:
+  seeds: [1]
+  max_steps: auto
+  warmup_steps: 6000
+  flops_warmup_steps: 50000
+
+eval:
+  datasets: [msmarco-dev, trec-dl-2019, trec-dl-2020,
+             msmarco-dev-lite, trec-dl-2019-lite, trec-dl-2020-lite]

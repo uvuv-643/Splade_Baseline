@@ -1,8 +1,10 @@
+import math
+
 import numpy as np
 import torch
 from transformers import AutoTokenizer
 
-from .data import sample_triples
+from .data import TriplePool, sample_indices
 from .loss import flops, flops_scale, info_nce
 from .model import Splade, SpladeEncoder, tokenize
 
@@ -19,27 +21,31 @@ def train(cfg: dict, ctx) -> SpladeEncoder:
     model = Splade(mcfg["hf_model"], mcfg["query_encoder"]).to(ctx.device)
 
     sample_seed = tcfg["seed"] if dcfg["sample_seed"] == "auto" else int(dcfg["sample_seed"])
-    pool = ctx.root / dcfg["train_pool"]
-    triples = sample_triples(pool, dcfg["train_triples"], sample_seed)
-    print(f"[train] {len(triples)} триплетов из {pool.name} (seed выборки {sample_seed})",
-          flush=True)
+    pool = TriplePool(ctx.root / dcfg["train_pool"])
+    n_triples = int(dcfg["train_triples"])
+    sample = sample_indices(len(pool), n_triples, sample_seed)
+    # max_steps=auto: компьют пропорционален данным — ровно один проход по выборке
+    max_steps = math.ceil(n_triples / tcfg["batch_size"]) \
+        if tcfg["max_steps"] == "auto" else tcfg["max_steps"]
+    print(f"[train] {n_triples} триплетов из {pool.path.name} "
+          f"(seed выборки {sample_seed}), {max_steps} шагов", flush=True)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=tcfg["lr"])
     scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lambda s: _lr_lambda(s, tcfg["warmup_steps"], tcfg["max_steps"]))
+        optimizer, lambda s: _lr_lambda(s, tcfg["warmup_steps"], max_steps))
 
     rng = np.random.default_rng(tcfg["seed"])
-    order = rng.permutation(len(triples))
+    order = rng.permutation(n_triples)
     bs = tcfg["batch_size"]
     use_amp = ctx.device.type == "cuda"
     model.train()
     ptr = 0
     window = []
-    for step in range(tcfg["max_steps"]):
+    for step in range(max_steps):
         if ptr + bs > len(order):
-            order = rng.permutation(len(triples))
+            order = rng.permutation(n_triples)
             ptr = 0
-        batch = [triples[i] for i in order[ptr:ptr + bs]]
+        batch = pool.read(sample[order[ptr:ptr + bs]])
         ptr += bs
         queries = [t[0] for t in batch]
         docs = [t[1] for t in batch] + [t[2] for t in batch]

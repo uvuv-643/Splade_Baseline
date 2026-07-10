@@ -1,0 +1,31 @@
+extends: base.yaml
+name: pd-splade
+description: >
+  PD-SPLADE: обучение с явным бюджетом активности вместо ручных λ —
+  мультипликативный dual ascent (GECO-стиль) ведёт λ_q/λ_d к целевым
+  L0 (budget_q/budget_d активных термов), квадратичный конверт 2000 шагов
+  защищает от раннего коллапса, при lr<10% пика λ заморожена (anti-windup);
+  плюс межбатчевый банк негативов (XBM) на 2048 детачнутых доковых
+  представлений с шага 3000. Один сид, полный пул triples.train.small,
+  один проход (train_triples=full, max_steps=auto). Бейзлайн для сравнения:
+  верхняя точка compute-scaling (та же выборка данных и компьют, fixed-λ).
+  Запуск: ./lab queue configs/pd_splade.yaml
+
+data:
+  train_pool: data/train/triples-full.tsv
+  train_triples: full
+
+train:
+  seeds: [1]
+  max_steps: auto
+  warmup_steps: 6000
+  flops_warmup_steps: 2000
+  budget_q: 32
+  budget_d: 128
+  dual_eta: 0.02
+  xbm_size: 2048
+  xbm_start_step: 3000
+
+eval:
+  datasets: [msmarco-dev, trec-dl-2019, trec-dl-2020,
+             msmarco-dev-lite, trec-dl-2019-lite, trec-dl-2020-lite]

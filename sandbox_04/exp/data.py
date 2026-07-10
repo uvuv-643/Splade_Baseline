@@ -22,7 +22,9 @@ def line_offsets(pool_path) -> np.ndarray:
             offsets.append(pos)
             pos += len(line)
     arr = np.asarray(offsets, dtype=np.int64)
-    np.save(cache, arr)
+    tmp = cache.with_name(cache.name + ".part.npy")
+    np.save(tmp, arr)
+    tmp.replace(cache)
     return arr
 
 

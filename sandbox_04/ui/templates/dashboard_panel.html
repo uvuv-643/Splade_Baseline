@@ -1,0 +1,53 @@
+<div class="cards">
+  <div class="card">
+    <div class="n">{% if state.running %}<span class="status-running">●</span>{% else %}<span class="status-failed">●</span>{% endif %}</div>
+    <div class="l">worker {% if state.running %}pid {{ state.pid }}{% else %}остановлен{% endif %}</div>
+  </div>
+  <div class="card"><div class="n">{{ state.n_jobs }}</div><div class="l">в очереди{% if state.n_waiting %} ({{ state.n_waiting }} ждут){% endif %}</div></div>
+  <div class="card"><div class="n">{{ state.active|length }}</div><div class="l">активно</div></div>
+  <div class="card"><div class="n">{{ n_runs }}</div><div class="l">всего запусков</div></div>
+  {% for st, c in counts.items() %}
+  <div class="card"><div class="n status-{{ st }}">{{ c }}</div><div class="l">{{ st }}</div></div>
+  {% endfor %}
+</div>
+
+<h2>Сейчас выполняется</h2>
+{% if active %}
+<table>
+<tr><th>вид</th><th>run</th><th>детали</th><th>процесс</th><th></th></tr>
+{% for a in active %}
+<tr>
+  <td><span class="badge {% if a.kind == 'eval' %}eval{% endif %}">{{ a.kind }}</span></td>
+  <td><a href="/runs/{{ a.run_id }}">{{ a.run_id }}</a></td>
+  <td>{{ a.detail }}</td>
+  <td>{% if a.live %}<span class="status-running">жив</span>{% else %}<span class="badge dead">мёртв</span>{% endif %}</td>
+  <td>
+    {% if a.kind == 'eval' %}
+    <form class="inline" method="post" action="/runs/{{ a.run_id }}/kill_eval"
+          onsubmit="return confirm('Остановить eval {{ a.run_id }}?')"><button class="danger">stop eval</button></form>
+    {% else %}
+    <form class="inline" method="post" action="/runs/{{ a.run_id }}/kill"
+          onsubmit="return confirm('Остановить {{ a.run_id }}?')"><button class="danger">kill</button></form>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p class="muted">ничего не выполняется</p>
+{% endif %}
+
+<h2>Последние запуски</h2>
+<table>
+<tr><th>run</th><th>статус</th><th>метрики</th></tr>
+{% for r in recent %}
+<tr>
+  <td><a href="/runs/{{ r.id }}">{{ r.id }}</a></td>
+  <td class="status-{{ r.status }}">{{ r.status }}{% if r.eval_running %} <span class="badge eval">eval бежит</span>{% endif %}</td>
+  <td>{% for k, v in r.metrics.items() %}{{ k }}={{ "%.4f"|format(v) }} {% endfor %}</td>
+</tr>
+{% endfor %}
+</table>
+
+<h2>Worker log (хвост)</h2>
+<pre>{{ worker_log }}</pre>

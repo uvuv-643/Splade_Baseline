@@ -197,16 +197,50 @@ def stop_daemon():
     print(f"worker (pid={pid}) остановлен, бежавшие запуски помечены failed")
 
 
-def daemon_status():
+def worker_state() -> dict:
+    """Сводка состояния для UI/CLI: жив ли демон, что в очереди, что реально
+    сейчас выполняется. Активные джобы берём из claimed/ (train — по status
+    запуска 'running', eval — по eval.pid), плюс любые running-запуски."""
     pid = daemon_pid()
     jobs = queue_mod.list_jobs()
     n_wait = sum(1 for _, j in jobs if queue_mod.dep_state(j) == "waiting")
-    running = [r for r in runs.list_runs() if r["status"] == "running"]
-    if pid:
-        print(f"worker: работает (pid={pid})")
+    active = []
+    seen = set()
+    for path, job in queue_mod.list_claimed():
+        rid = job.get("run_id")
+        kind = job.get("kind", "train")
+        run_dir = runs.run_dir(rid)
+        if kind == "eval":
+            live = runs.eval_pid(run_dir) is not None
+        else:
+            live = runs.get_status(run_dir) == "running"
+        active.append({"run_id": rid, "kind": kind,
+                       "datasets": job.get("datasets", []), "live": live})
+        seen.add(rid)
+    for r in runs.list_runs():
+        if r["status"] == "running" and r["id"] not in seen:
+            active.append({"run_id": r["id"], "kind": "train",
+                           "datasets": [], "live": True})
+    return {"pid": pid, "running": bool(pid), "n_jobs": len(jobs),
+            "n_waiting": n_wait, "active": active}
+
+
+def worker_log_tail(n=200) -> str:
+    if not WORKER_LOG.exists():
+        return "(worker.log пуст)"
+    return "\n".join(WORKER_LOG.read_text(
+        encoding="utf-8", errors="replace").splitlines()[-n:])
+
+
+def daemon_status():
+    st = worker_state()
+    if st["pid"]:
+        print(f"worker: работает (pid={st['pid']})")
     else:
         print("worker: не запущен")
-    waiting_note = f" (из них {n_wait} ждут зависимость)" if n_wait else ""
-    print(f"очередь: {len(jobs)} джобов{waiting_note}")
-    for r in running:
-        print(f"бежит: {r['id']}")
+    waiting_note = f" (из них {st['n_waiting']} ждут зависимость)" if st["n_waiting"] else ""
+    print(f"очередь: {st['n_jobs']} джобов{waiting_note}")
+    for a in st["active"]:
+        detail = f" {','.join(a['datasets'])}" if a["datasets"] else ""
+        dead = "" if a["live"] else " (процесс мёртв!)"
+        print(f"бежит: [{a['kind']}] {a['run_id']}{detail}{dead}")

@@ -4,18 +4,25 @@ from pathlib import Path
 
 import yaml
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from core import config as config_mod
-from core import data, gate, queue as queue_mod, runs, snapshots, stats
+from core import data, gate, queue as queue_mod, runs, snapshots, stats, worker
 from core.paths import CONFIGS_DIR, FAILED_JOBS_DIR
 
 app = FastAPI(title="splade lab")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
+# Фоновые статусы: gate/enqueue и подготовка данных — чтобы UI показывал прогресс
+# долгих операций, не блокируя запрос.
 GATING = {}
+DATA_TASKS = {}
 
+
+# --------------------------------------------------------------------------- #
+#  вспомогательные рендеры
+# --------------------------------------------------------------------------- #
 
 def _loss_svg(run_dir, width=800, height=240) -> str:
     log_path = Path(run_dir) / "train_log.jsonl"
@@ -49,22 +56,79 @@ def _loss_svg(run_dir, width=800, height=240) -> str:
         f"</svg>")
 
 
-def _stdout_tail(run_dir, n=80) -> str:
-    log = Path(run_dir) / "stdout.log"
-    if not log.exists():
-        return "(нет stdout.log)"
-    return "\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-n:])
+def _tail(path: Path, n=80) -> str:
+    if not path.exists():
+        return f"(нет {path.name})"
+    return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:])
 
+
+def _stdout_tail(run_dir, n=80) -> str:
+    return _tail(Path(run_dir) / "stdout.log", n)
+
+
+def _configs() -> list:
+    return sorted(str(p.relative_to(CONFIGS_DIR)) for p in CONFIGS_DIR.rglob("*.yaml"))
+
+
+def _active_jobs() -> list:
+    """Джобы, реально выполняющиеся сейчас (файл в claimed/). Возвращаем в том же
+    виде, что и очередь, плюс флаг live (жив ли процесс)."""
+    out = []
+    for p, job in queue_mod.list_claimed():
+        kind = job.get("kind", "train")
+        rid = job.get("run_id")
+        run_dir = runs.run_dir(rid)
+        if kind == "eval":
+            live = runs.eval_pid(run_dir) is not None
+        else:
+            live = runs.get_status(run_dir) == "running"
+        out.append({
+            "file": p.name, "run_id": rid, "kind": kind,
+            "detail": ",".join(job.get("datasets", [])) if kind == "eval"
+                      else job.get("snapshot", {}).get("hash", ""),
+            "datasets": job.get("datasets", []),
+            "live": live,
+        })
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  Dashboard
+# --------------------------------------------------------------------------- #
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return RedirectResponse("/runs")
+    return RedirectResponse("/dashboard")
 
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request):
+    return templates.TemplateResponse(request, "dashboard.html", {})
+
+
+@app.get("/dashboard/panel", response_class=HTMLResponse)
+def dashboard_panel(request: Request):
+    st = worker.worker_state()
+    all_runs = runs.list_runs()
+    counts = {}
+    for r in all_runs:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    active = _active_jobs()
+    recent = all_runs[:8]
+    return templates.TemplateResponse(request, "dashboard_panel.html", {
+        "state": st, "counts": counts, "active": active,
+        "n_runs": len(all_runs), "recent": recent,
+        "worker_log": worker.worker_log_tail(40),
+    })
+
+
+# --------------------------------------------------------------------------- #
+#  Runs
+# --------------------------------------------------------------------------- #
 
 @app.get("/runs", response_class=HTMLResponse)
 def runs_page(request: Request, filter: str = ""):
-    return templates.TemplateResponse(request, "runs.html",
-                                      {"filter": filter})
+    return templates.TemplateResponse(request, "runs.html", {"filter": filter})
 
 
 @app.get("/runs/table", response_class=HTMLResponse)
@@ -85,9 +149,12 @@ def run_page(request: Request, run_id: str):
     if (d / "metrics.json").exists():
         metrics_js = json.loads((d / "metrics.json").read_text(encoding="utf-8"))
     others = [r["id"] for r in runs.list_runs() if r["id"] != d.name]
+    all_datasets = sorted(data.DATASETS)
     return templates.TemplateResponse(request, "run.html", {
         "info": info, "config": cfg_text, "metrics": metrics_js,
         "loss_svg": _loss_svg(d), "stdout": _stdout_tail(d), "others": others,
+        "eval_log": _tail(d / "eval_log.jsonl", 30) if (d / "eval_log.jsonl").exists() else "",
+        "all_datasets": all_datasets,
     })
 
 
@@ -103,6 +170,55 @@ def run_kill(run_id: str):
     return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
 
+@app.post("/runs/{run_id}/kill_eval")
+def run_kill_eval(run_id: str):
+    runs.kill_eval(run_id)
+    return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+
+@app.post("/runs/{run_id}/delete")
+def run_delete(run_id: str):
+    try:
+        runs.delete_run(run_id)
+    except (RuntimeError, FileNotFoundError):
+        return RedirectResponse(f"/runs/{run_id}", status_code=303)
+    return RedirectResponse("/runs", status_code=303)
+
+
+@app.post("/runs/{run_id}/eval")
+def run_eval(run_id: str, datasets: list = Form(...),
+             save_index: bool = Form(False), now: bool = Form(False)):
+    d = runs.resolve_run(run_id)
+    ds = [x for x in datasets if x]
+    if not ds:
+        return RedirectResponse(f"/runs/{run_id}", status_code=303)
+    if now:
+        from core import runner
+
+        def _bg():
+            try:
+                runner.execute_eval(d, ds, save_index=save_index)
+            except SystemExit:
+                pass
+        threading.Thread(target=_bg, daemon=True).start()
+    else:
+        queue_mod.enqueue_eval(d.name, ds, save_index=save_index)
+    return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+
+@app.post("/runs/{run_id}/name_model")
+def run_name_model(run_id: str, model_name: str = Form(...), message: str = Form("")):
+    try:
+        runs.name_model(run_id, model_name, message)
+    except FileNotFoundError:
+        pass
+    return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  Queue
+# --------------------------------------------------------------------------- #
+
 @app.get("/queue", response_class=HTMLResponse)
 def queue_page(request: Request):
     jobs = []
@@ -116,41 +232,54 @@ def queue_page(request: Request):
             "dep_state": queue_mod.dep_state(job),
             "created": job.get("created", ""),
         })
-    running = [r for r in runs.list_runs() if r["status"] == "running"]
-    configs = sorted(str(p.relative_to(CONFIGS_DIR))
-                     for p in CONFIGS_DIR.rglob("*.yaml"))
+    active = _active_jobs()
+    configs = _configs()
     failed = []
     if FAILED_JOBS_DIR.exists():
         for p in sorted(FAILED_JOBS_DIR.glob("*.log")):
             failed.append({"name": p.stem, "log": p.read_text(encoding="utf-8")[-2000:]})
     snaps = snapshots.list_snapshots()
     return templates.TemplateResponse(request, "queue.html", {
-        "jobs": jobs, "running": running, "configs": configs,
+        "jobs": jobs, "active": active, "configs": configs,
         "gating": dict(GATING), "failed": failed, "snapshots": snaps,
+        "worker": worker.worker_state(),
     })
 
 
-def _gate_and_enqueue(cfg, snap_hash, snap_name, do_gate):
+def _gate_and_enqueue(cfg, snap_hash, snap_name, do_gate, sweep=None,
+                      eval_datasets=None, save_index=False):
     key = cfg["name"]
     try:
+        variants = config_mod.expand_sweep(cfg, sweep) if sweep else [cfg]
+        for v in variants:
+            config_mod.validate(v)
         if do_gate:
             GATING[key] = "gate: бежит"
-            ok, gate_dir = gate.run_gate(cfg, snap_hash, snap_name)
+            ok, gate_dir = gate.run_gate(variants[0], snap_hash, snap_name)
             if not ok:
                 GATING[key] = f"gate ПРОВАЛ: {gate_dir}/stdout.log"
                 return
-        for cfg_seed in config_mod.expand_seeds(cfg):
-            run_id = runs.new_run_id(cfg_seed["name"], cfg_seed["train"]["seed"])
-            run_dir = runs.reserve_run(run_id, cfg_seed, snap_hash, snap_name)
-            queue_mod.enqueue_train(cfg_seed, snap_hash, snap_name, run_dir.name)
-        GATING.pop(key, None)
+        n = 0
+        for v in variants:
+            for cfg_seed in config_mod.expand_seeds(v):
+                run_id = runs.new_run_id(cfg_seed["name"], cfg_seed["train"]["seed"])
+                run_dir = runs.reserve_run(run_id, cfg_seed, snap_hash, snap_name)
+                queue_mod.enqueue_train(cfg_seed, snap_hash, snap_name, run_dir.name)
+                if eval_datasets:
+                    queue_mod.enqueue_eval(run_dir.name, eval_datasets,
+                                           depends_on=run_dir.name,
+                                           save_index=save_index)
+                n += 1
+        GATING[key] = f"поставлено {n} джобов ✓"
     except Exception as e:
         GATING[key] = f"ошибка: {e}"
 
 
 @app.post("/queue/new")
 def queue_new(config_file: str = Form(""), config_yaml: str = Form(""),
-              snapshot: str = Form(""), do_gate: bool = Form(False)):
+              snapshot: str = Form(""), do_gate: bool = Form(False),
+              sweep: str = Form(""), eval_datasets: str = Form(""),
+              save_index: bool = Form(False)):
     if config_yaml.strip():
         cfg = yaml.safe_load(config_yaml)
         if "extends" in cfg:
@@ -165,8 +294,12 @@ def queue_new(config_file: str = Form(""), config_yaml: str = Form(""),
     else:
         snap_hash = snapshots.save(name=cfg["name"])
         snap_name = snapshots.load_index()[snap_hash]["name"]
-    threading.Thread(target=_gate_and_enqueue,
-                     args=(cfg, snap_hash, snap_name, do_gate), daemon=True).start()
+    sweep_dict = config_mod.parse_sweep(sweep.split()) if sweep.strip() else None
+    eval_ds = [d for d in eval_datasets.split(",") if d.strip()] or None
+    threading.Thread(
+        target=_gate_and_enqueue,
+        args=(cfg, snap_hash, snap_name, do_gate, sweep_dict, eval_ds, save_index),
+        daemon=True).start()
     GATING[cfg["name"]] = "поставлен: gate/enqueue в фоне"
     return RedirectResponse("/queue", status_code=303)
 
@@ -188,6 +321,102 @@ def queue_down(job_id: str):
     queue_mod.move(job_id, +1)
     return RedirectResponse("/queue", status_code=303)
 
+
+# --------------------------------------------------------------------------- #
+#  Worker
+# --------------------------------------------------------------------------- #
+
+@app.get("/worker", response_class=HTMLResponse)
+def worker_page(request: Request):
+    return templates.TemplateResponse(request, "worker.html", {})
+
+
+@app.get("/worker/panel", response_class=HTMLResponse)
+def worker_panel(request: Request):
+    return templates.TemplateResponse(request, "worker_panel.html", {
+        "state": worker.worker_state(),
+        "log": worker.worker_log_tail(200),
+    })
+
+
+@app.post("/worker/start")
+def worker_start(gpus: str = Form("")):
+    worker.start_daemon(gpus or None)
+    return RedirectResponse("/worker", status_code=303)
+
+
+@app.post("/worker/stop")
+def worker_stop():
+    worker.stop_daemon()
+    return RedirectResponse("/worker", status_code=303)
+
+
+@app.get("/worker/badge", response_class=HTMLResponse)
+def worker_badge():
+    st = worker.worker_state()
+    dot = "on" if st["running"] else "off"
+    n_active = len(st["active"])
+    txt = f"worker pid={st['pid']}" if st["running"] else "worker остановлен"
+    return HTMLResponse(
+        f'<span class="dot {dot}"></span>{txt} · очередь {st["n_jobs"]} · '
+        f'активно {n_active}')
+
+
+# --------------------------------------------------------------------------- #
+#  Data
+# --------------------------------------------------------------------------- #
+
+@app.get("/data", response_class=HTMLResponse)
+def data_page(request: Request):
+    st = data.status()
+    return templates.TemplateResponse(request, "data.html", {
+        "status": st, "parts": list(data.PREPARE_PARTS),
+        "tasks": dict(DATA_TASKS),
+    })
+
+
+def _prepare_bg(parts, force):
+    key = ",".join(parts) if parts else "all"
+    try:
+        DATA_TASKS[key] = "готовится…"
+        if parts:
+            for part in parts:
+                data.PREPARE_PARTS[part](force=force)
+            data.write_manifest()
+        else:
+            data.prepare_all(force=force)
+        DATA_TASKS[key] = "готово ✓"
+    except Exception as e:
+        DATA_TASKS[key] = f"ошибка: {e}"
+
+
+@app.post("/data/prepare")
+def data_prepare(parts: str = Form(""), force: bool = Form(False)):
+    part_list = [p for p in parts.split(",") if p.strip()]
+    threading.Thread(target=_prepare_bg, args=(part_list, force), daemon=True).start()
+    return RedirectResponse("/data", status_code=303)
+
+
+@app.post("/data/verify")
+def data_verify():
+    errors = data.verify_manifest()
+    DATA_TASKS["verify"] = "целостность ок ✓" if not errors else " / ".join(errors[:5])
+    return RedirectResponse("/data", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  Models
+# --------------------------------------------------------------------------- #
+
+@app.get("/models", response_class=HTMLResponse)
+def models_page(request: Request):
+    registry = runs.list_models()
+    return templates.TemplateResponse(request, "models.html", {"models": registry})
+
+
+# --------------------------------------------------------------------------- #
+#  Compare
+# --------------------------------------------------------------------------- #
 
 @app.get("/compare", response_class=HTMLResponse)
 def compare_page(request: Request):
@@ -211,6 +440,10 @@ def compare_page(request: Request):
                     for ds in (report or {}).get("datasets", {})},
     })
 
+
+# --------------------------------------------------------------------------- #
+#  Snapshots / diff
+# --------------------------------------------------------------------------- #
 
 @app.get("/snapshots", response_class=HTMLResponse)
 def snapshots_page(request: Request, a: str = "", b: str = ""):

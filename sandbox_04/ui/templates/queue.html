@@ -2,22 +2,34 @@
 {% block content %}
 <h1>Очередь</h1>
 
-{% if running %}
-<h2>Бегут</h2>
+<p>
+  worker: {% if worker.running %}<span class="status-running">● работает</span> (pid={{ worker.pid }}){% else %}<span class="status-failed">● остановлен</span> — <a href="/worker">запустить</a>{% endif %}
+</p>
+
+<h2>Сейчас выполняется ({{ active|length }})</h2>
+{% if active %}
 <table>
-<tr><th>run</th><th></th></tr>
-{% for r in running %}
+<tr><th>вид</th><th>run</th><th>детали</th><th>процесс</th><th></th></tr>
+{% for a in active %}
 <tr>
-  <td><a href="/runs/{{ r.id }}">{{ r.id }}</a></td>
+  <td><span class="badge {% if a.kind == 'eval' %}eval{% endif %}">{{ a.kind }}</span></td>
+  <td><a href="/runs/{{ a.run_id }}">{{ a.run_id }}</a></td>
+  <td>{{ a.detail }}</td>
+  <td>{% if a.live %}<span class="status-running">жив</span>{% else %}<span class="badge dead">мёртв</span>{% endif %}</td>
   <td>
-    <form class="inline" method="post" action="/runs/{{ r.id }}/kill"
-          onsubmit="return confirm('Остановить {{ r.id }}?')">
-      <button type="submit">kill</button>
-    </form>
+    {% if a.kind == 'eval' %}
+    <form class="inline" method="post" action="/runs/{{ a.run_id }}/kill_eval"
+          onsubmit="return confirm('Остановить eval {{ a.run_id }}?')"><button class="danger">stop eval</button></form>
+    {% else %}
+    <form class="inline" method="post" action="/runs/{{ a.run_id }}/kill"
+          onsubmit="return confirm('Остановить {{ a.run_id }}?')"><button class="danger">kill</button></form>
+    {% endif %}
   </td>
 </tr>
 {% endfor %}
 </table>
+{% else %}
+<p class="muted">ничего не выполняется</p>
 {% endif %}
 
 <h2>В очереди ({{ jobs|length }})</h2>
@@ -26,7 +38,7 @@
 {% for j in jobs %}
 <tr>
   <td>{{ loop.index }}</td>
-  <td>{{ j.kind }}{% if j.dep_state == "waiting" %} <span class="badge">ждёт train</span>{% elif j.dep_state == "dep_failed" %} <span class="badge">train упал</span>{% endif %}</td>
+  <td><span class="badge {% if j.kind == 'eval' %}eval{% endif %}">{{ j.kind }}</span>{% if j.dep_state == "waiting" %} <span class="badge">ждёт train</span>{% elif j.dep_state == "dep_failed" %} <span class="badge dead">train упал</span>{% endif %}</td>
   <td>{{ j.run_id }}</td>
   <td><span class="badge">{{ j.snapshot }}</span></td>
   <td>
@@ -34,7 +46,7 @@
     <form class="inline" method="post" action="/queue/{{ j.file }}/down"><button>↓</button></form>
     <form class="inline" method="post" action="/queue/{{ j.file }}/delete"
           onsubmit="return confirm('Удалить {{ j.run_id }} ({{ j.kind }}) из очереди?')">
-      <button>удалить</button>
+      <button class="danger">удалить</button>
     </form>
   </td>
 </tr>
@@ -42,7 +54,7 @@
 </table>
 
 {% if gating %}
-<h2>Gate в фоне</h2>
+<h2>Gate / enqueue в фоне</h2>
 <ul>{% for name, st in gating.items() %}<li><b>{{ name }}</b>: {{ st }}</li>{% endfor %}</ul>
 {% endif %}
 
@@ -55,14 +67,29 @@
 
 <h2>Поставить новый</h2>
 <form method="post" action="/queue/new">
-  <p>конфиг из файла:
+  <fieldset>
+  <legend>конфиг</legend>
+  <p>из файла:
     <select name="config_file">
       <option value=""></option>
       {% for c in configs %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
     </select>
   </p>
   <p>или yaml (перекрывает выбор файла; поддерживает extends):</p>
-  <textarea name="config_yaml" rows="10" cols="90" placeholder="extends: base.yaml&#10;name: my-exp&#10;..."></textarea>
+  <textarea name="config_yaml" rows="8" cols="90" placeholder="extends: base.yaml&#10;name: my-exp&#10;..."></textarea>
+  </fieldset>
+
+  <fieldset>
+  <legend>свип и eval (опционально)</legend>
+  <p>sweep (через пробел, как в CLI):
+    <input type="text" name="sweep" size="60" placeholder="data.train_triples=30000,120000,480000"></p>
+  <p>eval-датасеты после train (цепочка train→eval):
+    <input type="text" name="eval_datasets" size="60" placeholder="msmarco-dev,trec-dl-2019,trec-dl-2020"></p>
+  <p><label><input type="checkbox" name="save_index" value="true"> сохранять индекс (--save-index)</label></p>
+  </fieldset>
+
+  <fieldset>
+  <legend>снапшот и gate</legend>
   <p>снапшот (пусто = авто-снапшот текущего exp/):
     <select name="snapshot">
       <option value=""></option>
@@ -70,6 +97,7 @@
     </select>
   </p>
   <p><label><input type="checkbox" name="do_gate" value="true" checked> gate перед постановкой (в фоне, ~2 мин)</label></p>
-  <button type="submit">в очередь</button>
+  </fieldset>
+  <button class="go" type="submit">в очередь</button>
 </form>
 {% endblock %}

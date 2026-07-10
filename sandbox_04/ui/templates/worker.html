@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Worker</h1>
+
+<fieldset>
+<legend>Управление</legend>
+<form class="inline" method="post" action="/worker/start">
+  gpus: <input type="text" name="gpus" placeholder="0 или 0,1 (пусто = авто)" size="18">
+  <button class="go" type="submit">start</button>
+</form>
+<form class="inline" method="post" action="/worker/stop"
+      onsubmit="return confirm('Остановить worker? Бегущие train помечаются failed, eval вернётся в очередь.')">
+  <button class="danger" type="submit">stop</button>
+</form>
+</fieldset>
+
+<div hx-get="/worker/panel" hx-trigger="load, every 5s" hx-swap="innerHTML">
+загрузка…
+</div>
+{% endblock %}

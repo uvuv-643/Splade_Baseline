@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Data</h1>
+
+<div class="cards">
+  <div class="card"><div class="n">{% if status.manifest %}✓{% else %}✗{% endif %}</div><div class="l">manifest</div></div>
+  <div class="card"><div class="n">{% if status.train_pool %}✓{% else %}✗{% endif %}</div><div class="l">train pool</div></div>
+</div>
+
+<h2>Датасеты</h2>
+<table>
+<tr><th>датасет</th><th>готов</th></tr>
+{% for name, ok in status.datasets.items() %}
+<tr><td>{{ name }}</td><td>{% if ok %}<span class="status-done">готов</span>{% else %}<span class="status-failed">НЕТ</span>{% endif %}</td></tr>
+{% endfor %}
+</table>
+
+<fieldset>
+<legend>Подготовить данные (в фоне)</legend>
+<form method="post" action="/data/prepare">
+  <p>части (через запятую; пусто = всё ядро):
+    <input type="text" name="parts" size="40" placeholder="collection,dev,trec,lite,gate,train-pool"></p>
+  <p class="muted">доступно: {{ parts|join(", ") }}</p>
+  <p><label><input type="checkbox" name="force" value="true"> force (переделать заново)</label></p>
+  <button class="go" type="submit">prepare</button>
+</form>
+<form class="inline" method="post" action="/data/verify"><button type="submit">verify целостность</button></form>
+</fieldset>
+
+{% if tasks %}
+<h2>Статус фоновых операций</h2>
+<ul>{% for k, v in tasks.items() %}<li><b>{{ k }}</b>: {{ v }}</li>{% endfor %}</ul>
+{% endif %}
+{% endblock %}

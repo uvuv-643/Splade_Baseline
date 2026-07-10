@@ -51,17 +51,29 @@ def enqueue_eval(run_id: str, datasets, depends_on=None, save_index=False) -> Pa
 enqueue = enqueue_train
 
 
-def list_jobs() -> list:
-    if not QUEUE_DIR.exists():
+def _read_jobs_in(directory) -> list:
+    if not directory.exists():
         return []
     out = []
-    for path in sorted(QUEUE_DIR.glob("*.yaml")):
+    for path in sorted(directory.glob("*.yaml")):
         try:
             job = yaml.safe_load(path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError):
             continue
         out.append((path, job))
     return out
+
+
+def list_jobs() -> list:
+    return _read_jobs_in(QUEUE_DIR)
+
+
+def list_claimed() -> list:
+    """Джобы, уже взятые воркером в работу (файл лежит в claimed/). Именно они
+    сейчас выполняются на GPU. UI показывает их как активные — иначе бегущий
+    eval не виден ни в очереди (файл ушёл из QUEUE_DIR), ни среди 'running'
+    запусков (eval не трогает status запуска)."""
+    return _read_jobs_in(CLAIMED_DIR)
 
 
 def dep_state(job: dict) -> str:

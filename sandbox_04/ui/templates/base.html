@@ -5,13 +5,19 @@
 <title>splade lab</title>
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 <style>
-body { font: 14px/1.5 -apple-system, "Segoe UI", sans-serif; margin: 0; color: #222; }
-nav { background: #1a2634; padding: 10px 20px; }
+body { font: 14px/1.5 -apple-system, "Segoe UI", sans-serif; margin: 0; color: #222; background: #fbfcfe; }
+nav { background: #1a2634; padding: 10px 20px; display: flex; align-items: center; }
 nav a { color: #cfe2ff; margin-right: 18px; text-decoration: none; font-weight: 600; }
 nav a:hover { color: #fff; }
-main { padding: 16px 24px; max-width: 1200px; }
-table { border-collapse: collapse; width: 100%; margin: 8px 0; }
-th, td { border: 1px solid #ddd; padding: 5px 9px; text-align: left; font-size: 13px; }
+nav .brand { color: #fff; font-weight: 700; margin-right: 26px; letter-spacing: .3px; }
+nav .spacer { flex: 1; }
+nav .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+nav .dot.on { background: #46d369; }
+nav .dot.off { background: #c0261f; }
+nav .wstat { color: #cfe2ff; font-size: 12px; }
+main { padding: 16px 24px; max-width: 1280px; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0; background: #fff; }
+th, td { border: 1px solid #ddd; padding: 5px 9px; text-align: left; font-size: 13px; vertical-align: top; }
 th { background: #f0f3f7; }
 tr:hover td { background: #f8fbff; }
 pre { background: #f6f6f6; border: 1px solid #ddd; padding: 10px; overflow-x: auto; font-size: 12px; }
@@ -20,22 +26,43 @@ pre { background: #f6f6f6; border: 1px solid #ddd; padding: 10px; overflow-x: au
 .status-failed { color: #c0261f; font-weight: 600; }
 .status-queued { color: #866a00; font-weight: 600; }
 .badge { background: #eef; border-radius: 4px; padding: 1px 6px; font-family: monospace; font-size: 12px; }
+.badge.eval { background: #e7f7ec; color: #0a7d24; }
+.badge.dead { background: #fde8e8; color: #c0261f; }
 button { cursor: pointer; padding: 3px 10px; border: 1px solid #999; border-radius: 4px; background: #fff; }
 button:hover { background: #eef; }
+button.danger { border-color: #c0261f; color: #c0261f; }
+button.danger:hover { background: #fde8e8; }
+button.go { border-color: #0a7d24; color: #0a7d24; }
+button.go:hover { background: #e7f7ec; }
 input[type=text], select, textarea { padding: 4px 6px; border: 1px solid #bbb; border-radius: 4px; }
 textarea { font-family: monospace; font-size: 12px; }
 .warn { background: #fff4e0; border: 1px solid #e0b040; padding: 8px 12px; border-radius: 4px; margin: 8px 0; }
+.ok { background: #e7f7ec; border: 1px solid #46d369; padding: 8px 12px; border-radius: 4px; margin: 8px 0; }
 .primary-metric { background: #eaf4ff; }
 form.inline { display: inline; }
 h2 { margin-top: 24px; }
+.cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+.card { background: #fff; border: 1px solid #e1e6ee; border-radius: 8px; padding: 12px 16px; min-width: 120px; }
+.card .n { font-size: 26px; font-weight: 700; }
+.card .l { font-size: 12px; color: #667; text-transform: uppercase; letter-spacing: .4px; }
+.muted { color: #889; font-size: 12px; }
+fieldset { border: 1px solid #e1e6ee; border-radius: 8px; margin: 12px 0; }
+legend { font-weight: 600; padding: 0 6px; }
 </style>
 </head>
 <body>
 <nav>
+  <span class="brand">splade lab</span>
+  <a href="/dashboard">Dashboard</a>
   <a href="/runs">Runs</a>
   <a href="/queue">Queue</a>
+  <a href="/worker">Worker</a>
+  <a href="/data">Data</a>
+  <a href="/models">Models</a>
   <a href="/compare">Compare</a>
   <a href="/snapshots">Snapshots</a>
+  <span class="spacer"></span>
+  <span class="wstat" hx-get="/worker/badge" hx-trigger="load, every 5s" hx-swap="innerHTML">…</span>
 </nav>
 <main>
 {% block content %}{% endblock %}

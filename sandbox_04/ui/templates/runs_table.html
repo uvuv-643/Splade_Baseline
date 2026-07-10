@@ -1,9 +1,9 @@
 <table>
-<tr><th>run</th><th>статус</th><th>seed</th><th>снапшот</th><th>метрики</th><th>мин</th><th>создан</th></tr>
+<tr><th>run</th><th>статус</th><th>seed</th><th>снапшот</th><th>метрики</th><th>мин</th><th>создан</th><th></th></tr>
 {% for r in runs %}
 <tr>
   <td><a href="/runs/{{ r.id }}">{{ r.id }}</a></td>
-  <td class="status-{{ r.status }}">{{ r.status }}</td>
+  <td class="status-{{ r.status }}">{{ r.status }}{% if r.eval_running %} <span class="badge eval">eval бежит</span>{% endif %}</td>
   <td>{{ r.seed }}</td>
   <td><span class="badge">{{ r.snapshot }}</span></td>
   <td>
@@ -11,6 +11,16 @@
   </td>
   <td>{% if r.duration_s %}{{ "%.0f"|format(r.duration_s / 60) }}{% endif %}</td>
   <td>{{ r.created[:19] }}</td>
+  <td>
+    {% if r.status == "running" or r.eval_running %}
+    <span class="muted">бежит</span>
+    {% else %}
+    <form class="inline" method="post" action="/runs/{{ r.id }}/delete"
+          onsubmit="return confirm('Удалить каталог запуска {{ r.id }} безвозвратно?')">
+      <button class="danger">удалить</button>
+    </form>
+    {% endif %}
+  </td>
 </tr>
 {% endfor %}
 </table>

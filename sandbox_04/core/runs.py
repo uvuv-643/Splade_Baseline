@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import signal
 import time
 from datetime import datetime, timezone
@@ -70,6 +71,19 @@ def _read_yaml(path):
         return {}
 
 
+def eval_pid(run_dir) -> int:
+    """PID бегущего до-eval этого запуска (файл eval.pid пишет runner.execute_eval),
+    либо None, если eval не идёт или процесс уже мёртв."""
+    path = Path(run_dir) / "eval.pid"
+    if not path.exists():
+        return None
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return None
+    return pid if _pid_alive(pid) else None
+
+
 def run_info(d: Path) -> dict:
     cfg = _read_yaml(d / "config.yaml")
     meta = _read_json(d / "meta.json")
@@ -86,6 +100,10 @@ def run_info(d: Path) -> dict:
         "name": cfg.get("name", ""),
         "seed": (cfg.get("train") or {}).get("seed"),
         "status": get_status(d),
+        "eval_running": eval_pid(d) is not None,
+        "has_model": (d / "model").is_dir(),
+        "has_index": (d / "index").is_dir(),
+        "datasets": sorted(metrics.get("datasets", {})),
         "snapshot": snap.get("name") or snap.get("hash", ""),
         "snapshot_hash": snap.get("hash", ""),
         "core_hash": meta.get("core_hash", ""),
@@ -155,6 +173,44 @@ def kill_run(ref: str) -> bool:
         except OSError:
             pass
     set_status(d, "failed")
+    return True
+
+
+def kill_eval(ref: str) -> bool:
+    """Останавливает бегущий до-eval запуска (по eval.pid). Статус самого
+    train-запуска не трогаем — он остаётся 'done'. Файл eval.pid снимается
+    самим процессом в finally, но подчистим и здесь на случай SIGKILL."""
+    d = resolve_run(ref)
+    pid = eval_pid(d)
+    if pid is None:
+        return False
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    for _ in range(20):
+        if not _pid_alive(pid):
+            break
+        time.sleep(0.5)
+    else:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except OSError:
+            pass
+    (d / "eval.pid").unlink(missing_ok=True)
+    return True
+
+
+def delete_run(ref: str) -> bool:
+    """Полностью удаляет каталог запуска. Отказывается, если запуск сейчас
+    бежит (train-статус 'running' или идёт eval) — сначала останови его."""
+    d = resolve_run(ref)
+    if get_status(d) == "running" or eval_pid(d) is not None:
+        raise RuntimeError(f"{d.name} сейчас выполняется — сначала останови (kill)")
+    shutil.rmtree(d)
     return True
 
 

@@ -148,6 +148,11 @@ def execute_eval(run_dir, datasets, save_index=False) -> None:
 
     device = pick_device()
     t0 = time.time()
+    # eval.pid: чтобы бегущий eval был виден и убиваем из UI/CLI. Своего
+    # status='running' у eval-джоба нет (он не трогает статус train-запуска),
+    # поэтому «жив ли eval» определяется именно по этому pid-файлу.
+    eval_pid_file = run_dir / "eval.pid"
+    eval_pid_file.write_text(str(os.getpid()), encoding="utf-8")
     print(f"[eval] {run_dir.name}: {datasets} device={device} "
           f"snapshot={snap['hash']}", flush=True)
     _elog(event="start", datasets=list(datasets), device=str(device),
@@ -192,6 +197,8 @@ def execute_eval(run_dir, datasets, save_index=False) -> None:
         _elog(event="failed", datasets=list(datasets),
               duration_s=round(time.time() - t0, 1))
         raise SystemExit(1)
+    finally:
+        eval_pid_file.unlink(missing_ok=True)
 
 
 def start_run_process(run_dir, gpu=None) -> subprocess.Popen:

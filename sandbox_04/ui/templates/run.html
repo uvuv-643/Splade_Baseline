@@ -1,17 +1,34 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>{{ info.id }} <span class="status-{{ info.status }}">{{ info.status }}</span></h1>
+<h1>{{ info.id }} <span class="status-{{ info.status }}">{{ info.status }}</span>
+   {% if info.eval_running %}<span class="badge eval">eval бежит</span>{% endif %}</h1>
 <p>снапшот <span class="badge">{{ info.snapshot }} ({{ info.snapshot_hash }})</span>,
    core <span class="badge">{{ info.core_hash }}</span>,
    seed {{ info.seed }}
-   {% if info.duration_s %}, {{ "%.0f"|format(info.duration_s / 60) }} мин{% endif %}</p>
+   {% if info.duration_s %}, {{ "%.0f"|format(info.duration_s / 60) }} мин{% endif %}
+   {% if info.has_model %} · <span class="badge">model ✓</span>{% endif %}
+   {% if info.has_index %} · <span class="badge">index ✓</span>{% endif %}</p>
 
+<p>
 {% if info.status == "running" %}
 <form class="inline" method="post" action="/runs/{{ info.id }}/kill"
       onsubmit="return confirm('Остановить {{ info.id }}?')">
-  <button type="submit">kill</button>
+  <button class="danger" type="submit">kill train</button>
 </form>
 {% endif %}
+{% if info.eval_running %}
+<form class="inline" method="post" action="/runs/{{ info.id }}/kill_eval"
+      onsubmit="return confirm('Остановить eval {{ info.id }}?')">
+  <button class="danger" type="submit">stop eval</button>
+</form>
+{% endif %}
+{% if info.status != "running" and not info.eval_running %}
+<form class="inline" method="post" action="/runs/{{ info.id }}/delete"
+      onsubmit="return confirm('Удалить каталог запуска {{ info.id }} безвозвратно?')">
+  <button class="danger" type="submit">удалить запуск</button>
+</form>
+{% endif %}
+</p>
 
 {% if loss_svg %}
 <h2>Loss</h2>
@@ -38,6 +55,34 @@
 {% endfor %}
 {% endif %}
 
+{% if info.has_model %}
+<fieldset>
+<legend>До-eval на новых датасетах</legend>
+<form method="post" action="/runs/{{ info.id }}/eval">
+  <p>
+  {% for ds in all_datasets %}
+  <label style="display:inline-block;min-width:180px;font-size:12px">
+    <input type="checkbox" name="datasets" value="{{ ds }}"> {{ ds }}</label>
+  {% endfor %}
+  </p>
+  <p>
+    <label><input type="checkbox" name="save_index" value="true"> сохранять индекс</label>
+    &nbsp;&nbsp;<label><input type="checkbox" name="now" value="true"> считать сейчас (в фоне UI, не через worker)</label>
+  </p>
+  <button class="go" type="submit">поставить eval</button>
+</form>
+</fieldset>
+
+<fieldset>
+<legend>Назвать модель</legend>
+<form method="post" action="/runs/{{ info.id }}/name_model">
+  имя: <input type="text" name="model_name" placeholder="my-splade-v1">
+  описание: <input type="text" name="message" size="30">
+  <button type="submit">сохранить в реестр</button>
+</form>
+</fieldset>
+{% endif %}
+
 <h2>Конфиг</h2>
 <pre>{{ config }}</pre>
 
@@ -49,6 +94,11 @@
   </select>
   <button type="submit">дифф</button>
 </form>
+
+{% if eval_log %}
+<h2>eval_log (хвост)</h2>
+<pre>{{ eval_log }}</pre>
+{% endif %}
 
 <h2>stdout (хвост)</h2>
 <div hx-get="/runs/{{ info.id }}/stdout" hx-trigger="every 5s" hx-swap="innerHTML">

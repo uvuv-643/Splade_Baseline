@@ -1,0 +1,33 @@
+<p>
+  {% if state.running %}<span class="status-running">● работает</span> (pid={{ state.pid }}){% else %}<span class="status-failed">● остановлен</span>{% endif %}
+  · в очереди {{ state.n_jobs }}{% if state.n_waiting %} ({{ state.n_waiting }} ждут зависимость){% endif %}
+</p>
+
+<h2>Активные джобы</h2>
+{% if state.active %}
+<table>
+<tr><th>вид</th><th>run</th><th>датасеты</th><th>процесс</th><th></th></tr>
+{% for a in state.active %}
+<tr>
+  <td><span class="badge {% if a.kind == 'eval' %}eval{% endif %}">{{ a.kind }}</span></td>
+  <td><a href="/runs/{{ a.run_id }}">{{ a.run_id }}</a></td>
+  <td>{{ a.datasets|join(",") }}</td>
+  <td>{% if a.live %}<span class="status-running">жив</span>{% else %}<span class="badge dead">мёртв</span>{% endif %}</td>
+  <td>
+    {% if a.kind == 'eval' %}
+    <form class="inline" method="post" action="/runs/{{ a.run_id }}/kill_eval"
+          onsubmit="return confirm('Остановить eval {{ a.run_id }}?')"><button class="danger">stop eval</button></form>
+    {% else %}
+    <form class="inline" method="post" action="/runs/{{ a.run_id }}/kill"
+          onsubmit="return confirm('Остановить {{ a.run_id }}?')"><button class="danger">kill</button></form>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p class="muted">нет активных джобов</p>
+{% endif %}
+
+<h2>worker.log</h2>
+<pre>{{ log }}</pre>

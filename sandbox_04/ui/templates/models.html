@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Модели</h1>
+<p class="muted">именованные модели (реестр runs/models.json). Имя присваивается на странице запуска.</p>
+{% if models %}
+<table>
+<tr><th>имя</th><th>run</th><th>описание</th><th>создано</th></tr>
+{% for name, e in models.items() %}
+<tr>
+  <td><b>{{ name }}</b></td>
+  <td><a href="/runs/{{ e.run_id }}">{{ e.run_id }}</a></td>
+  <td>{{ e.description }}</td>
+  <td>{{ e.created[:19] }}</td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p class="muted">пока нет именованных моделей</p>
+{% endif %}
+{% endblock %}

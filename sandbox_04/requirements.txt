@@ -5,6 +5,7 @@ scipy>=1.13
 pandas>=2.2
 pyarrow>=16
 pyyaml>=6
+psutil>=5.9
 requests>=2.31
 tqdm>=4.66
 ir_measures>=0.3.6

@@ -1,0 +1,8 @@
+{% if m %}
+<span class="badge {% if m.level == 'critical' %}memcrit{% elif m.level == 'warning' %}memwarn{% endif %}">
+{%- if m.level == 'critical' %}⛔ {% elif m.level == 'warning' %}⚠ {% endif %}{{ m.percent }}%</span>
+RSS {{ m.proc.rss|gb }} GB
+{% if m.encode %}<br><span class="muted">{{ m.encode.kind }}
+{{ m.encode.done }}/{{ m.encode.total }} · avg_nnz={{ m.encode.avg_nnz }} ·
+прогноз {{ m.encode.projected_bytes|gb }} GB</span>{% endif %}
+{% else %}<span class="muted">—</span>{% endif %}

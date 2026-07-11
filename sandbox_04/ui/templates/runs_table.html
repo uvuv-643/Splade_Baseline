@@ -3,7 +3,7 @@
 {% for r in runs %}
 <tr>
   <td><a href="/runs/{{ r.id }}">{{ r.id }}</a></td>
-  <td class="status-{{ r.status }}">{{ r.status }}{% if r.eval_running %} <span class="badge eval">eval бежит</span>{% endif %}</td>
+  <td class="status-{{ r.status }}">{{ r.status }}{% if r.eval_running %} <span class="badge eval">eval бежит</span>{% endif %}{% if r.oom %} <span class="badge memcrit" title="{{ r.oom.reason }}">⛔ OOM</span>{% endif %}{% if r.mem and r.mem.level == 'warning' %} <span class="badge memwarn">⚠ {{ r.mem.percent }}%</span>{% endif %}</td>
   <td>{{ r.seed }}</td>
   <td><span class="badge">{{ r.snapshot }}</span></td>
   <td>

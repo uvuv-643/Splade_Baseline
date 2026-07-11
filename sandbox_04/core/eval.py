@@ -6,14 +6,26 @@ import pandas as pd
 import scipy.sparse as sp
 import torch
 
-from . import data, guards, metrics
+from . import data, guards, memwatch, metrics
 
 ENCODE_CHUNK = 32768
 
 
-def _encode_matrix(encode_fn, texts) -> sp.csr_matrix:
-    mats = [encode_fn(texts[s:s + ENCODE_CHUNK])
-            for s in range(0, len(texts), ENCODE_CHUNK)]
+def _encode_matrix(encode_fn, texts, kind="") -> sp.csr_matrix:
+    mats = []
+    nnz_total = 0
+    for s in range(0, len(texts), ENCODE_CHUNK):
+        mat = encode_fn(texts[s:s + ENCODE_CHUNK])
+        mats.append(mat)
+        nnz_total += mat.nnz
+        done = s + mat.shape[0]
+        enc = memwatch.note_encode(kind, done, len(texts), nnz_total)
+        snap = memwatch.system_snapshot()
+        print(f"[encode {kind}] {done}/{len(texts)} "
+              f"({done / len(texts) * 100:.0f}%), avg_nnz={enc['avg_nnz']}, "
+              f"прогноз индекса {memwatch.gb(enc['projected_bytes'])} GB, "
+              f"память {snap['percent']}% из {memwatch.gb(snap['limit'])} GB",
+              flush=True)
     return sp.vstack(mats, format="csr") if len(mats) > 1 else mats[0]
 
 
@@ -90,7 +102,7 @@ def run_eval(encoder, dataset_names, eval_cfg, device, run_dir=None):
             d_mat = sp.load_npz(index_file)
         else:
             print(f"[eval] энкод корпуса {corpus_name}: {len(texts)} пассажей")
-            d_mat = _encode_matrix(encoder.encode_docs, texts)
+            d_mat = _encode_matrix(encoder.encode_docs, texts, f"doc:{corpus_name}")
         encode_s = time.time() - t0
         guards.check_csr(d_mat, len(texts), f"doc:{corpus_name}")
         guards.check_index_size(d_mat.shape[0], len(pids))
@@ -108,7 +120,7 @@ def run_eval(encoder, dataset_names, eval_cfg, device, run_dir=None):
             spec = data.DATASETS[ds_name]
             qids, q_texts = data.load_queries(spec["queryset"], eval_cfg["max_queries"])
             qrels = data.load_qrels(spec["queryset"])
-            q_mat = _encode_matrix(encoder.encode_queries, q_texts)
+            q_mat = _encode_matrix(encoder.encode_queries, q_texts, f"query:{ds_name}")
             guards.check_csr(q_mat, len(qids), f"query:{ds_name}")
             t0 = time.time()
             ranks = search(q_mat, d_mat, eval_cfg["topk"], device,

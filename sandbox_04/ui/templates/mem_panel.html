@@ -1,0 +1,64 @@
+{% if oom %}
+<div class="oom">
+  <b>⛔ убит по памяти ({{ oom.killed_by }})</b> — {{ oom.reason }}<br>
+  фаза {{ oom.phase }} · {{ oom.t[:19] }} UTC ·
+  занято {{ oom.snapshot.used|gb }} из {{ oom.snapshot.limit|gb }} GB ({{ oom.snapshot.source }})
+  {%- if oom.snapshot.proc %} · RSS дерева процесса {{ oom.snapshot.proc.rss|gb }} GB
+  ({{ oom.snapshot.proc.n_procs }} проц.){% endif %}
+  {%- if oom.snapshot.swap and oom.snapshot.swap.total %} · swap {{ oom.snapshot.swap.percent }}%{% endif %}<br>
+  {% if oom.encode %}
+  на момент убийства: энкод <b>{{ oom.encode.kind }}</b>
+  {{ oom.encode.done }}/{{ oom.encode.total }}
+  ({{ (100 * oom.encode.done / oom.encode.total)|round(1) }}%) ·
+  средний nnz вектора <b>{{ oom.encode.avg_nnz }}</b> ·
+  прогноз полного индекса <b>{{ oom.encode.projected_bytes|gb }} GB</b> —
+  векторы недостаточно разреженные<br>
+  {% endif %}
+  пороги: warn {{ oom.thresholds.warn_pct }}% / kill {{ oom.thresholds.kill_pct }}% /
+  grace {{ oom.thresholds.grace_s }}s
+  {% if oom.history %}
+  <details><summary>последние {{ oom.history|length }} сэмплов перед смертью</summary>
+<pre>{% for h in oom.history %}{{ h.t[11:19] }}  {{ "%5.1f"|format(h.percent) }}%  RSS {{ h.rss|gb }} GB
+{% endfor %}</pre></details>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if mem %}
+<div class="cards">
+  <div class="card">
+    <div class="n {% if mem.level == 'critical' %}status-failed{% elif mem.level == 'warning' %}status-queued{% endif %}">{{ mem.percent }}%</div>
+    <div class="l">память · {{ mem.used|gb }} / {{ mem.limit|gb }} GB ({{ mem.source }})</div>
+  </div>
+  {% if mem.proc %}
+  <div class="card"><div class="n">{{ mem.proc.rss|gb }}</div>
+    <div class="l">RSS дерева, GB ({{ mem.proc.n_procs }} проц.)</div></div>
+  {% endif %}
+  {% if mem.peak %}
+  <div class="card"><div class="n">{{ mem.peak.percent }}%</div>
+    <div class="l">пик · RSS до {{ mem.peak.rss|gb }} GB</div></div>
+  {% endif %}
+  {% if mem.swap and mem.swap.total %}
+  <div class="card"><div class="n">{{ mem.swap.percent }}%</div>
+    <div class="l">swap из {{ mem.swap.total|gb }} GB</div></div>
+  {% endif %}
+</div>
+{% if mem.level == 'warning' %}
+<div class="warn">⚠ память {{ mem.percent }}% ≥ warn-порога
+{{ mem.thresholds.warn_pct }}%; при {{ mem.thresholds.kill_pct }}% эксперимент
+будет остановлен watchdog'ом</div>
+{% endif %}
+{% if mem.encode %}
+<p>энкод <b>{{ mem.encode.kind }}</b>:
+{{ mem.encode.done }}/{{ mem.encode.total }}
+({{ (100 * mem.encode.done / mem.encode.total)|round(1) }}%) ·
+средний nnz вектора <b>{{ mem.encode.avg_nnz }}</b> ·
+прогноз полного индекса <b>{{ mem.encode.projected_bytes|gb }} GB</b>
+при лимите {{ mem.limit|gb }} GB</p>
+{% endif %}
+<p class="muted">обновлено {{ mem.t[11:19] }} UTC · фаза {{ mem.phase }} ·
+пороги warn {{ mem.thresholds.warn_pct }}% / kill {{ mem.thresholds.kill_pct }}%</p>
+{% elif not oom %}
+<p class="muted">данных о памяти нет (запуск был до появления memwatch)</p>
+{% endif %}
+{{ svg|safe }}

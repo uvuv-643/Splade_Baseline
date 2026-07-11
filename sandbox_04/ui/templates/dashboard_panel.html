@@ -3,6 +3,10 @@
     <div class="n">{% if state.running %}<span class="status-running">●</span>{% else %}<span class="status-failed">●</span>{% endif %}</div>
     <div class="l">worker {% if state.running %}pid {{ state.pid }}{% else %}остановлен{% endif %}</div>
   </div>
+  <div class="card">
+    <div class="n {% if state.mem.percent >= 90 %}status-failed{% elif state.mem.percent >= 80 %}status-queued{% endif %}">{{ state.mem.percent }}%</div>
+    <div class="l">RAM · {{ state.mem.used|gb }} / {{ state.mem.limit|gb }} GB ({{ state.mem.source }})</div>
+  </div>
   <div class="card"><div class="n">{{ state.n_jobs }}</div><div class="l">в очереди{% if state.n_waiting %} ({{ state.n_waiting }} ждут){% endif %}</div></div>
   <div class="card"><div class="n">{{ state.active|length }}</div><div class="l">активно</div></div>
   <div class="card"><div class="n">{{ n_runs }}</div><div class="l">всего запусков</div></div>
@@ -14,13 +18,14 @@
 <h2>Сейчас выполняется</h2>
 {% if active %}
 <table>
-<tr><th>вид</th><th>run</th><th>детали</th><th>процесс</th><th></th></tr>
+<tr><th>вид</th><th>run</th><th>детали</th><th>процесс</th><th>память</th><th></th></tr>
 {% for a in active %}
 <tr>
   <td><span class="badge {% if a.kind == 'eval' %}eval{% endif %}">{{ a.kind }}</span></td>
   <td><a href="/runs/{{ a.run_id }}">{{ a.run_id }}</a></td>
   <td>{{ a.detail }}</td>
   <td>{% if a.live %}<span class="status-running">жив</span>{% else %}<span class="badge dead">мёртв</span>{% endif %}</td>
+  <td>{% with m = a.mem %}{% include "mem_cell.html" %}{% endwith %}</td>
   <td>
     {% if a.kind == 'eval' %}
     <form class="inline" method="post" action="/runs/{{ a.run_id }}/kill_eval"

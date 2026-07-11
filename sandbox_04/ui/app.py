@@ -1,5 +1,6 @@
 import json
 import threading
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -8,11 +9,12 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from core import config as config_mod
-from core import data, gate, queue as queue_mod, runs, snapshots, stats, worker
+from core import data, gate, memwatch, queue as queue_mod, runs, snapshots, stats, worker
 from core.paths import CONFIGS_DIR, FAILED_JOBS_DIR
 
 app = FastAPI(title="splade lab")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+templates.env.filters["gb"] = lambda b: f"{(b or 0) / 2**30:.1f}"
 
 # Фоновые статусы: gate/enqueue и подготовка данных — чтобы UI показывал прогресс
 # долгих операций, не блокируя запрос.
@@ -56,6 +58,49 @@ def _loss_svg(run_dir, width=800, height=240) -> str:
         f"</svg>")
 
 
+def _mem_svg(run_dir, width=800, height=160) -> str:
+    log_path = Path(run_dir) / "memory.jsonl"
+    if not log_path.exists():
+        return ""
+    points = []
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            rec = json.loads(line)
+            points.append((datetime.fromisoformat(rec["t"]), rec["percent"]))
+        except (json.JSONDecodeError, KeyError, ValueError):
+            continue
+    if len(points) < 2:
+        return ""
+    t0 = points[0][0]
+    span = max(1.0, (points[-1][0] - t0).total_seconds())
+    pad = 30
+    sx = lambda t: pad + (t - t0).total_seconds() / span * (width - 2 * pad)
+    sy = lambda p: height - pad - p / 100 * (height - 2 * pad)
+    poly = " ".join(f"{sx(t):.1f},{sy(p):.1f}" for t, p in points)
+    warn_y, kill_y = sy(memwatch.WARN_PCT), sy(memwatch.KILL_PCT)
+    return (
+        f'<svg viewBox="0 0 {width} {height}" style="width:100%;max-width:{width}px;'
+        f'background:#fafafa;border:1px solid #ddd">'
+        f'<line x1="{pad}" y1="{warn_y:.1f}" x2="{width - pad}" y2="{warn_y:.1f}"'
+        f' stroke="#e0b040" stroke-dasharray="4 3"/>'
+        f'<line x1="{pad}" y1="{kill_y:.1f}" x2="{width - pad}" y2="{kill_y:.1f}"'
+        f' stroke="#c0261f" stroke-dasharray="4 3"/>'
+        f'<polyline points="{poly}" fill="none" stroke="#0074d9" stroke-width="1.5"/>'
+        f'<text x="{pad}" y="{warn_y - 4:.1f}" font-size="10" fill="#a86b00">'
+        f'warn {memwatch.WARN_PCT:.0f}%</text>'
+        f'<text x="{pad}" y="{kill_y - 4:.1f}" font-size="10" fill="#c0261f">'
+        f'kill {memwatch.KILL_PCT:.0f}%</text>'
+        f'<text x="{pad}" y="14" font-size="11">память, % от лимита · '
+        f'{points[0][0].strftime("%H:%M")}–{points[-1][0].strftime("%H:%M")} UTC · '
+        f'сейчас {points[-1][1]}%</text>'
+        f"</svg>")
+
+
+def _mem_ctx(run_dir) -> dict:
+    return {"mem": memwatch.read_memory(run_dir),
+            "oom": memwatch.read_oom(run_dir), "svg": _mem_svg(run_dir)}
+
+
 def _tail(path: Path, n=80) -> str:
     if not path.exists():
         return f"(нет {path.name})"
@@ -88,6 +133,7 @@ def _active_jobs() -> list:
                       else job.get("snapshot", {}).get("hash", ""),
             "datasets": job.get("datasets", []),
             "live": live,
+            "mem": memwatch.read_memory(run_dir),
         })
     return out
 
@@ -155,6 +201,8 @@ def run_page(request: Request, run_id: str):
         "loss_svg": _loss_svg(d), "stdout": _stdout_tail(d), "others": others,
         "eval_log": _tail(d / "eval_log.jsonl", 30) if (d / "eval_log.jsonl").exists() else "",
         "all_datasets": all_datasets,
+        "has_mem": bool((d / "memory.json").exists() or (d / "memory.jsonl").exists()
+                        or (d / "oom_kill.json").exists()),
     })
 
 
@@ -162,6 +210,12 @@ def run_page(request: Request, run_id: str):
 def run_stdout(run_id: str):
     d = runs.resolve_run(run_id)
     return HTMLResponse(f"<pre id='stdout'>{_stdout_tail(d)}</pre>")
+
+
+@app.get("/runs/{run_id}/mem", response_class=HTMLResponse)
+def run_mem(request: Request, run_id: str):
+    d = runs.resolve_run(run_id)
+    return templates.TemplateResponse(request, "mem_panel.html", _mem_ctx(d))
 
 
 @app.post("/runs/{run_id}/kill")
@@ -193,14 +247,10 @@ def run_eval(run_id: str, datasets: list = Form(...),
     if not ds:
         return RedirectResponse(f"/runs/{run_id}", status_code=303)
     if now:
+        # отдельный процесс, а не поток UI: memwatch может аккуратно убить
+        # eval, не задев сам UI-сервер
         from core import runner
-
-        def _bg():
-            try:
-                runner.execute_eval(d, ds, save_index=save_index)
-            except SystemExit:
-                pass
-        threading.Thread(target=_bg, daemon=True).start()
+        runner.start_eval_process(d, ds, save_index=save_index)
     else:
         queue_mod.enqueue_eval(d.name, ds, save_index=save_index)
     return RedirectResponse(f"/runs/{run_id}", status_code=303)
@@ -357,9 +407,14 @@ def worker_badge():
     dot = "on" if st["running"] else "off"
     n_active = len(st["active"])
     txt = f"worker pid={st['pid']}" if st["running"] else "worker остановлен"
+    mem = st["mem"]
+    color = {"ok": "#9fd3a8", "warning": "#ffb84d",
+             "critical": "#ff6b61"}[memwatch.level(mem["percent"])]
     return HTMLResponse(
         f'<span class="dot {dot}"></span>{txt} · очередь {st["n_jobs"]} · '
-        f'активно {n_active}')
+        f'активно {n_active} · <span style="color:{color}">'
+        f'RAM {mem["percent"]:.0f}% ({memwatch.gb(mem["used"])}/'
+        f'{memwatch.gb(mem["limit"])} GB)</span>')
 
 
 # --------------------------------------------------------------------------- #

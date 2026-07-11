@@ -219,6 +219,31 @@ def delete_run(ref: str) -> bool:
     return True
 
 
+def requeue_run(ref: str) -> str:
+    """«Оживляет» упавший (или иным образом завершённый) запуск: ставит его
+    train-джоб обратно в очередь, ссылаясь на тот же каталог. Каталог уже несёт
+    config.yaml + snapshot.json, поэтому worker.start_job/runner.execute просто
+    перезапустят обучение с теми же параметрами и снапшотом кода — id запуска и
+    его история (stdout.log и т.п.) сохраняются, метрики/модель перезапишутся.
+
+    Отказывается, если запуск сейчас бежит или уже стоит в очереди (status
+    'running'/'queued' или идёт eval) — оживлять нечего. Возвращает run_id."""
+    from . import queue as queue_mod
+    d = resolve_run(ref)
+    status = get_status(d)
+    if status == "running" or eval_pid(d) is not None:
+        raise RuntimeError(f"{d.name} сейчас выполняется — оживлять нечего")
+    if status == "queued":
+        raise RuntimeError(f"{d.name} уже в очереди")
+    cfg = _read_yaml(d / "config.yaml")
+    if not cfg:
+        raise FileNotFoundError(f"в {d} нет config.yaml — нечего перезапускать")
+    snap = _read_json(d / "snapshot.json")
+    set_status(d, "queued")
+    queue_mod.enqueue_train(cfg, snap.get("hash", ""), snap.get("name", ""), d.name)
+    return d.name
+
+
 def name_model(run_ref: str, name: str, message=""):
     d = resolve_run(run_ref)
     if not (d / "model").is_dir():

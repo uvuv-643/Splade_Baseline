@@ -198,6 +198,17 @@ def cmd_kill(args):
         print(f"{args.run}: не бежит (нечего останавливать)")
 
 
+def cmd_requeue(args):
+    """«Оживить» упавший запуск: снова поставить его train-джоб в очередь
+    (тот же каталог/снапшот/конфиг). Заберёт worker."""
+    try:
+        run_id = runs.requeue_run(args.run)
+    except (RuntimeError, FileNotFoundError) as e:
+        sys.exit(str(e))
+    print(f"[queue] + train {run_id} (оживлён)\n"
+          f"        запустите worker: ./lab worker start --gpus 0")
+
+
 def cmd_snap(args):
     if args.action == "save":
         h = snapshots.save(name=args.name, message=args.message or "")
@@ -326,7 +337,9 @@ def cmd_test(args):
 def cmd_ui(args):
     import uvicorn
     sys.path.insert(0, str(ROOT))
-    uvicorn.run("ui.app:app", host=args.host, port=args.port, log_level="warning")
+    uvicorn.run("ui.app:app", host=args.host, port=args.port,
+                log_level="warning", reload=args.reload,
+                reload_dirs=[str(ROOT / "ui"), str(ROOT / "core")] if args.reload else None)
 
 
 def build_parser():
@@ -381,6 +394,10 @@ def build_parser():
     sp.add_argument("run")
     sp.set_defaults(fn=cmd_kill)
 
+    sp = sub.add_parser("requeue", help="оживить упавший запуск (обратно в очередь)")
+    sp.add_argument("run")
+    sp.set_defaults(fn=cmd_requeue)
+
     sp = sub.add_parser("snap", help="снапшоты кода exp/")
     snap_sub = sp.add_subparsers(dest="action", required=True)
     s = snap_sub.add_parser("save")
@@ -434,6 +451,9 @@ def build_parser():
     sp = sub.add_parser("ui", help="веб-UI")
     sp.add_argument("--host", default="127.0.0.1")
     sp.add_argument("--port", type=int, default=8000)
+    sp.add_argument("--reload", action="store_true",
+                    help="автоперезагрузка при изменении кода ui/ и core/ "
+                         "(удобно при разработке)")
     sp.set_defaults(fn=cmd_ui)
 
     return p

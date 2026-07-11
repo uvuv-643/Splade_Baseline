@@ -15,10 +15,18 @@
     {% if r.status == "running" or r.eval_running %}
     <span class="muted">бежит</span>
     {% else %}
+    {% if r.status == "failed" %}
+    <form class="inline" method="post" action="/runs/{{ r.id }}/requeue"
+          onsubmit="return confirm('Оживить {{ r.id }} — поставить обратно в очередь?')">
+      <button class="go">оживить</button>
+    </form>
+    {% endif %}
+    {% if r.status != "queued" %}
     <form class="inline" method="post" action="/runs/{{ r.id }}/delete"
           onsubmit="return confirm('Удалить каталог запуска {{ r.id }} безвозвратно?')">
       <button class="danger">удалить</button>
     </form>
+    {% endif %}
     {% endif %}
   </td>
 </tr>

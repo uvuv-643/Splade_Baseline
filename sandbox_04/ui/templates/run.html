@@ -22,7 +22,13 @@
   <button class="danger" type="submit">stop eval</button>
 </form>
 {% endif %}
-{% if info.status != "running" and not info.eval_running %}
+{% if info.status == "failed" and not info.eval_running %}
+<form class="inline" method="post" action="/runs/{{ info.id }}/requeue"
+      onsubmit="return confirm('Оживить {{ info.id }} — поставить обратно в очередь?')">
+  <button class="go" type="submit">оживить (в очередь)</button>
+</form>
+{% endif %}
+{% if info.status != "running" and info.status != "queued" and not info.eval_running %}
 <form class="inline" method="post" action="/runs/{{ info.id }}/delete"
       onsubmit="return confirm('Удалить каталог запуска {{ info.id }} безвозвратно?')">
   <button class="danger" type="submit">удалить запуск</button>

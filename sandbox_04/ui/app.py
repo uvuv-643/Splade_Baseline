@@ -185,6 +185,17 @@ def run_delete(run_id: str):
     return RedirectResponse("/runs", status_code=303)
 
 
+@app.post("/runs/{run_id}/requeue")
+def run_requeue(run_id: str):
+    """«Оживить» упавший запуск: снова поставить его train-джоб в очередь
+    (тот же каталог/снапшот/конфиг). Заберёт worker при следующем поллинге."""
+    try:
+        runs.requeue_run(run_id)
+    except (RuntimeError, FileNotFoundError):
+        pass
+    return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+
 @app.post("/runs/{run_id}/eval")
 def run_eval(run_id: str, datasets: list = Form(...),
              save_index: bool = Form(False), now: bool = Form(False)):

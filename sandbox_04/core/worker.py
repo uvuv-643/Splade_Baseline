@@ -7,11 +7,13 @@ import time
 from datetime import datetime, timezone
 
 from . import config as config_mod
+from . import memwatch
 from . import queue as queue_mod
 from . import runner, runs
 from .paths import QUEUE_DIR, ROOT, WORKER_LOG, WORKER_PIDFILE
 
 POLL_S = 5
+MEM_KILL_STREAK = 3
 
 
 def detect_gpus(spec=None) -> list:
@@ -72,6 +74,53 @@ def start_job(job: dict, gpu):
     return proc, run_dir, kind
 
 
+def _oom_note(run_dir) -> str:
+    oom = memwatch.read_oom(run_dir)
+    if not oom:
+        return ""
+    return (f" — убит по памяти ({oom['killed_by']}): {oom['reason']}, "
+            f"подробности в {run_dir}/oom_kill.json")
+
+
+def _enforce_memory(active, mem_state):
+    """Внешняя страховка поверх in-process watchdog: если процесс застрял в
+    нативном коде и свой watchdog не сработал, память всё равно освободим.
+    Убиваем при KILL_PCT MEM_KILL_STREAK поллов подряд — джоб с максимальным
+    RSS дерева процессов."""
+    snap = memwatch.system_snapshot()
+    lvl = memwatch.level(snap["percent"])
+    if lvl != "critical":
+        if lvl == "warning" and mem_state["level"] == "ok":
+            _log(f"ВНИМАНИЕ: память {snap['percent']}% ≥ "
+                 f"{memwatch.WARN_PCT:.0f}% (занято {memwatch.gb(snap['used'])} "
+                 f"из {memwatch.gb(snap['limit'])} GB)")
+        mem_state.update(level="ok" if lvl == "ok" else "warning", streak=0)
+        return
+    mem_state["level"] = "critical"
+    mem_state["streak"] += 1
+    _log(f"память {snap['percent']}% ≥ {memwatch.KILL_PCT:.0f}% "
+         f"({mem_state['streak']}/{MEM_KILL_STREAK} поллов)")
+    if mem_state["streak"] < MEM_KILL_STREAK or not active:
+        return
+    trees = {gpu: memwatch.process_tree(job[0].pid)
+             for gpu, job in active.items() if job[0].poll() is None}
+    if not trees:
+        return
+    gpu = max(trees, key=lambda g: trees[g]["rss"])
+    proc, run_dir, job_path, kind = active[gpu]
+    snap["proc"] = trees[gpu]
+    memwatch.write_oom_report(
+        run_dir, killed_by="worker", phase=kind, snap=snap,
+        reason=f"память {snap['percent']}% ≥ {memwatch.KILL_PCT:.0f}% "
+               f"{MEM_KILL_STREAK} поллов подряд, in-process watchdog "
+               f"не сработал")
+    _log(f"убиваю {run_dir.name} ({kind}, RSS дерева "
+         f"{memwatch.gb(trees[gpu]['rss'])} GB): SIGTERM, grace "
+         f"{memwatch.GRACE_S:.0f}s, затем SIGKILL")
+    memwatch.terminate_tree(proc.pid)
+    mem_state["streak"] = 0
+
+
 def _finish_job(gpu, active):
     proc, run_dir, job_path, kind = active[gpu]
     code = proc.poll()
@@ -81,9 +130,11 @@ def _finish_job(gpu, active):
         # eval не владеет статусом запуска: train-запуск как был 'done', так и
         # остаётся. Упавший eval-джоб уводим в failed/ для наглядности.
         if code != 0:
-            queue_mod.fail_job(job_path, f"eval {run_dir.name}: exit={code}\n"
+            queue_mod.fail_job(job_path, f"eval {run_dir.name}: exit={code}"
+                                         f"{_oom_note(run_dir)}\n"
                                          f"см. {run_dir}/stdout.log и eval_log.jsonl")
-            _log(f"{run_dir.name}: EVAL ПРОВАЛ (exit={code}, gpu={gpu})")
+            _log(f"{run_dir.name}: EVAL ПРОВАЛ (exit={code}, gpu={gpu})"
+                 f"{_oom_note(run_dir)}")
         else:
             job_path.unlink(missing_ok=True)
             _log(f"{run_dir.name}: eval готов (gpu={gpu})")
@@ -93,7 +144,8 @@ def _finish_job(gpu, active):
             runs.set_status(run_dir, "failed")
             status = "failed"
         job_path.unlink(missing_ok=True)
-        _log(f"{run_dir.name}: {status} (exit={code}, gpu={gpu})")
+        _log(f"{run_dir.name}: {status} (exit={code}, gpu={gpu})"
+             f"{_oom_note(run_dir)}")
     del active[gpu]
     return True
 
@@ -121,8 +173,12 @@ def _shutdown(active):
 
 def worker_loop(gpus: list):
     _log(f"старт, gpus={gpus}")
+    snap = memwatch.system_snapshot()
+    _log(f"memwatch: лимит {memwatch.gb(snap['limit'])} GB ({snap['source']}), "
+         f"warn {memwatch.WARN_PCT:.0f}%, kill {memwatch.KILL_PCT:.0f}%")
     adopt_stale()
     active = {}
+    mem_state = {"level": "ok", "streak": 0}
     stop = {"flag": False}
 
     def on_term(signum, frame):
@@ -138,6 +194,8 @@ def worker_loop(gpus: list):
         if stop["flag"]:
             _shutdown(active)
             return
+
+        _enforce_memory(active, mem_state)
 
         for gpu in gpus:
             if gpu in active:
@@ -215,14 +273,17 @@ def worker_state() -> dict:
         else:
             live = runs.get_status(run_dir) == "running"
         active.append({"run_id": rid, "kind": kind,
-                       "datasets": job.get("datasets", []), "live": live})
+                       "datasets": job.get("datasets", []), "live": live,
+                       "mem": memwatch.read_memory(run_dir)})
         seen.add(rid)
     for r in runs.list_runs():
         if r["status"] == "running" and r["id"] not in seen:
             active.append({"run_id": r["id"], "kind": "train",
-                           "datasets": [], "live": True})
+                           "datasets": [], "live": True,
+                           "mem": memwatch.read_memory(runs.run_dir(r["id"]))})
     return {"pid": pid, "running": bool(pid), "n_jobs": len(jobs),
-            "n_waiting": n_wait, "active": active}
+            "n_waiting": n_wait, "active": active,
+            "mem": memwatch.system_snapshot()}
 
 
 def worker_log_tail(n=200) -> str:
@@ -240,6 +301,10 @@ def daemon_status():
         print("worker: не запущен")
     waiting_note = f" (из них {st['n_waiting']} ждут зависимость)" if st["n_waiting"] else ""
     print(f"очередь: {st['n_jobs']} джобов{waiting_note}")
+    mem = st["mem"]
+    print(f"память: {mem['percent']}% (занято {memwatch.gb(mem['used'])} из "
+          f"{memwatch.gb(mem['limit'])} GB, {mem['source']}), "
+          f"warn {memwatch.WARN_PCT:.0f}% / kill {memwatch.KILL_PCT:.0f}%")
     for a in st["active"]:
         detail = f" {','.join(a['datasets'])}" if a["datasets"] else ""
         dead = "" if a["live"] else " (процесс мёртв!)"

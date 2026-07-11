@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import yaml
 
-from . import contract, data, runs
+from . import contract, data, memwatch, runs
 from . import eval as eval_mod
 from .context import RunContext
 from .hashing import core_hash, sha256_text
@@ -67,6 +67,8 @@ def execute(run_dir) -> None:
 
     (run_dir / "pid").write_text(str(os.getpid()), encoding="utf-8")
     runs.set_status(run_dir, "running")
+    memwatch.install_sigterm_handler()
+    watch = memwatch.MemWatch(run_dir, phase="train").start()
     device = pick_device()
     t0 = time.time()
     meta = {
@@ -114,6 +116,8 @@ def execute(run_dir) -> None:
         _write_meta(run_dir, meta)
         runs.set_status(run_dir, "failed")
         raise SystemExit(1)
+    finally:
+        watch.stop()
 
 
 def execute_eval(run_dir, datasets, save_index=False) -> None:
@@ -153,6 +157,8 @@ def execute_eval(run_dir, datasets, save_index=False) -> None:
     # поэтому «жив ли eval» определяется именно по этому pid-файлу.
     eval_pid_file = run_dir / "eval.pid"
     eval_pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    memwatch.install_sigterm_handler()
+    watch = memwatch.MemWatch(run_dir, phase="eval").start()
     print(f"[eval] {run_dir.name}: {datasets} device={device} "
           f"snapshot={snap['hash']}", flush=True)
     _elog(event="start", datasets=list(datasets), device=str(device),
@@ -198,6 +204,7 @@ def execute_eval(run_dir, datasets, save_index=False) -> None:
               duration_s=round(time.time() - t0, 1))
         raise SystemExit(1)
     finally:
+        watch.stop()
         eval_pid_file.unlink(missing_ok=True)
 
 

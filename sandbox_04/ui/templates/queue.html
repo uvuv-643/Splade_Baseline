@@ -9,13 +9,14 @@
 <h2>Сейчас выполняется ({{ active|length }})</h2>
 {% if active %}
 <table>
-<tr><th>вид</th><th>run</th><th>детали</th><th>процесс</th><th></th></tr>
+<tr><th>вид</th><th>run</th><th>детали</th><th>процесс</th><th>память</th><th></th></tr>
 {% for a in active %}
 <tr>
   <td><span class="badge {% if a.kind == 'eval' %}eval{% endif %}">{{ a.kind }}</span></td>
   <td><a href="/runs/{{ a.run_id }}">{{ a.run_id }}</a></td>
   <td>{{ a.detail }}</td>
   <td>{% if a.live %}<span class="status-running">жив</span>{% else %}<span class="badge dead">мёртв</span>{% endif %}</td>
+  <td>{% with m = a.mem %}{% include "mem_cell.html" %}{% endwith %}</td>
   <td>
     {% if a.kind == 'eval' %}
     <form class="inline" method="post" action="/runs/{{ a.run_id }}/kill_eval"

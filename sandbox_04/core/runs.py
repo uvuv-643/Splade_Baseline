@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 from . import config as config_mod
+from . import memwatch
 from .paths import MODELS_REGISTRY, RUNS_DIR
 
 
@@ -94,13 +95,17 @@ def run_info(d: Path) -> dict:
         for m in ("mrr@10", "ndcg@10"):
             if m in agg:
                 key_metrics[f"{ds}/{m}"] = agg[m]
+    status = get_status(d)
+    eval_running = eval_pid(d) is not None
     return {
         "id": d.name,
         "dir": d,
         "name": cfg.get("name", ""),
         "seed": (cfg.get("train") or {}).get("seed"),
-        "status": get_status(d),
-        "eval_running": eval_pid(d) is not None,
+        "status": status,
+        "eval_running": eval_running,
+        "mem": memwatch.read_memory(d) if status == "running" or eval_running else {},
+        "oom": memwatch.read_oom(d),
         "has_model": (d / "model").is_dir(),
         "has_index": (d / "index").is_dir(),
         "datasets": sorted(metrics.get("datasets", {})),

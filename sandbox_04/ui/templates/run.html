@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>{{ info.id }} <span class="status-{{ info.status }}">{{ info.status }}</span>
-   {% if info.eval_running %}<span class="badge eval">eval бежит</span>{% endif %}</h1>
+   {% if info.eval_running %}<span class="badge eval">eval бежит</span>{% endif %}
+   {% if info.oom %}<span class="badge memcrit" title="{{ info.oom.reason }}">⛔ убит по памяти</span>{% endif %}
+   {% if info.mem and info.mem.level == 'warning' %}<span class="badge memwarn">⚠ память {{ info.mem.percent }}%</span>{% endif %}</h1>
 <p>снапшот <span class="badge">{{ info.snapshot }} ({{ info.snapshot_hash }})</span>,
    core <span class="badge">{{ info.core_hash }}</span>,
    seed {{ info.seed }}
@@ -35,6 +37,15 @@
 </form>
 {% endif %}
 </p>
+
+{% if has_mem %}
+<h2>Память</h2>
+{% if info.status == "running" or info.eval_running %}
+<div hx-get="/runs/{{ info.id }}/mem" hx-trigger="load, every 3s" hx-swap="innerHTML"></div>
+{% else %}
+<div hx-get="/runs/{{ info.id }}/mem" hx-trigger="load" hx-swap="innerHTML"></div>
+{% endif %}
+{% endif %}
 
 {% if loss_svg %}
 <h2>Loss</h2>

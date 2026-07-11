@@ -45,6 +45,7 @@ def test_cgroup_memory_unlimited_v1_ignored(tmp_path, monkeypatch):
 
 
 def test_system_snapshot_prefers_constrained_cgroup(tmp_path, monkeypatch):
+    monkeypatch.delenv("LAB_MEM_TOTAL_GB", raising=False)
     monkeypatch.setattr(memwatch, "CGROUP_V2", tmp_path)
     monkeypatch.setattr(memwatch, "CGROUP_V1", tmp_path / "нет")
     (tmp_path / "memory.max").write_text(str(10 * 2**30))
@@ -54,6 +55,33 @@ def test_system_snapshot_prefers_constrained_cgroup(tmp_path, monkeypatch):
         assert snap["source"] == "cgroup"
         assert snap["percent"] == 90.0
         assert snap["limit"] == 10 * 2**30
+
+
+def test_user_memory_sums_own_rss(monkeypatch):
+    monkeypatch.setenv("LAB_MEM_TOTAL_GB", "64")
+    um = memwatch.user_memory()
+    assert um["limit"] == 64 * 2**30
+    assert um["used"] > 0
+    assert um["percent"] == round(um["used"] / um["limit"] * 100, 1)
+
+
+def test_user_memory_invalid_limit(monkeypatch):
+    monkeypatch.delenv("LAB_MEM_TOTAL_GB", raising=False)
+    assert memwatch.user_memory() is None
+    monkeypatch.setenv("LAB_MEM_TOTAL_GB", "мусор")
+    assert memwatch.user_memory() is None
+    monkeypatch.setenv("LAB_MEM_TOTAL_GB", "0")
+    assert memwatch.user_memory() is None
+
+
+def test_system_snapshot_uses_user_quota(tmp_path, monkeypatch):
+    monkeypatch.setenv("LAB_MEM_TOTAL_GB", "1000000")
+    monkeypatch.setattr(memwatch, "CGROUP_V2", tmp_path / "нет")
+    monkeypatch.setattr(memwatch, "CGROUP_V1", tmp_path / "нет")
+    snap = memwatch.system_snapshot()
+    assert snap["source"] == "user"
+    assert snap["limit"] == 1000000 * 2**30
+    assert snap["used"] == snap["user"]["used"]
 
 
 def test_note_encode_math():

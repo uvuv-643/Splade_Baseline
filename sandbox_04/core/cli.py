@@ -1,6 +1,7 @@
 import argparse
 import difflib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -130,6 +131,8 @@ def cmd_sweep(args):
 
 
 def cmd_worker(args):
+    if args.mem_gb:
+        os.environ["LAB_MEM_TOTAL_GB"] = str(args.mem_gb)
     if args.action == "start":
         worker.start_daemon(args.gpus)
     elif args.action == "stop":
@@ -360,6 +363,9 @@ def build_parser():
     sp = sub.add_parser("worker", help="демон очереди")
     sp.add_argument("action", choices=["start", "stop", "status", "run"])
     sp.add_argument("--gpus")
+    sp.add_argument("--mem-gb", type=float,
+                    help="сколько GB оперативки выделено вам на общей машине; "
+                         "лимитом станет суммарный RSS ваших процессов")
     sp.set_defaults(fn=cmd_worker)
 
     sp = sub.add_parser("status", help="очередь + все запуски")

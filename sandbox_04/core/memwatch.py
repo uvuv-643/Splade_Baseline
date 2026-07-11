@@ -67,18 +67,47 @@ def cgroup_memory():
     return None
 
 
+def user_memory():
+    """Квота пользователя на общей машине без cgroup-лимита: лимит задаётся
+    через LAB_MEM_TOTAL_GB (`lab worker ... --mem-gb`), занято — суммарный RSS
+    процессов текущего пользователя. None, если лимит не задан/невалиден."""
+    raw = os.environ.get("LAB_MEM_TOTAL_GB")
+    if not raw:
+        return None
+    try:
+        limit = int(float(raw) * 2**30)
+    except ValueError:
+        return None
+    if limit <= 0:
+        return None
+    uid = os.getuid()
+    rss = 0
+    for p in psutil.process_iter(["uids", "memory_info"]):
+        info = p.info
+        if info["uids"] and info["uids"].real == uid and info["memory_info"]:
+            rss += info["memory_info"].rss
+    if rss <= 0:
+        return None
+    return {"limit": limit, "used": rss,
+            "percent": round(rss / limit * 100, 1)}
+
+
 def system_snapshot() -> dict:
-    """Эффективное состояние памяти: host (по MemAvailable) и cgroup; за
-    основной процент берётся более ограниченный источник."""
+    """Эффективное состояние памяти: базой служит квота пользователя
+    (LAB_MEM_TOTAL_GB), если задана, иначе host (по MemAvailable); cgroup
+    перекрывает базу, когда он более ограничен."""
     vm = psutil.virtual_memory()
     sw = psutil.swap_memory()
     host = {"total": vm.total, "used": vm.total - vm.available,
             "percent": round(vm.percent, 1)}
     cg = cgroup_memory()
-    if cg and cg["percent"] > host["percent"]:
-        used, limit, percent, source = cg["used"], cg["limit"], cg["percent"], "cgroup"
+    user = user_memory()
+    if user:
+        used, limit, percent, source = user["used"], user["limit"], user["percent"], "user"
     else:
         used, limit, percent, source = host["used"], host["total"], host["percent"], "host"
+    if cg and cg["percent"] > percent:
+        used, limit, percent, source = cg["used"], cg["limit"], cg["percent"], "cgroup"
     return {
         "t": datetime.now(timezone.utc).isoformat(),
         "percent": round(percent, 1),
@@ -87,6 +116,7 @@ def system_snapshot() -> dict:
         "source": source,
         "host": host,
         "cgroup": cg,
+        "user": user,
         "swap": {"total": sw.total, "used": sw.used, "percent": sw.percent},
     }
 
